@@ -1,0 +1,73 @@
+name: Recommendation Deploy
+
+on:
+  workflow_run:
+    workflows: ["Recommendation CI"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: recommendation-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 30
+    env:
+      DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          mask-aws-account-id: true
+
+      - name: EC2 배포
+        env:
+          INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
+        run: |
+          PARAMS=$(jq -n --arg sha "$DEPLOY_SHA" '{
+            commands: [
+              "set -e",
+              "sudo -u ubuntu -H git -C /opt/daejeoniac-recommendation fetch origin main",
+              ("sudo -u ubuntu -H git -C /opt/daejeoniac-recommendation switch --detach " + $sha),
+              "docker compose -f /opt/daejeoniac-recommendation/recommendation_api/deploy/docker-compose.yml build --pull",
+              "docker compose -f /opt/daejeoniac-recommendation/recommendation_api/deploy/docker-compose.yml up -d",
+              "curl --fail --retry 12 --retry-delay 5 --retry-all-errors http://127.0.0.1:8000/health"
+            ]
+          }')
+
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name AWS-RunShellScript \
+            --parameters "$PARAMS" \
+            --query "Command.CommandId" \
+            --output text)
+
+          aws ssm wait command-executed \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID" || true
+
+          aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID"
+
+          STATUS=$(aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --query "Status" \
+            --output text)
+
+          test "$STATUS" = "Success"
