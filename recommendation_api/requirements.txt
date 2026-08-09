@@ -1,0 +1,9 @@
+fastapi==0.139.2
+httpx==0.28.1
+httpx2==2.7.0
+networkx==3.6.1
+numpy==2.5.1
+openai==2.48.0
+pydantic==2.13.4
+scipy==1.18.0
+uvicorn[standard]==0.51.0
