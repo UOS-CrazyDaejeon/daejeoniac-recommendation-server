@@ -46,7 +46,7 @@ jobs:
       - name: Send deployment command
         id: send-command
         run: |
-          APP_DIR="${EC2_APP_DIR:-/opt/daejeon-recommendation}"
+          APP_DIR="${EC2_APP_DIR:-/opt/daejeoniac-recommendation}"
           PARAMS=$(jq -n --arg app_dir "$APP_DIR" '{
             commands: [
               "set -eu",
