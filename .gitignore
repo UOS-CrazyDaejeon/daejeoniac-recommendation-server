@@ -1,1 +1,9 @@
 recommendation_api/.env
+
+.DS_Store
+recommendation_api/.env.example
+tests/__pycache__/test_receipt_api.cpython-39.pyc
+tests/__pycache__/test_receipt_api.cpython-313.pyc
+tests/__pycache__/test_receipt_gpt.cpython-39.pyc
+tests/__pycache__/test_receipt_ocr.cpython-39.pyc
+tests/__pycache__/test_receipt_ocr.cpython-313.pyc

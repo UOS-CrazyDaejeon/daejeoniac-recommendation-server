@@ -53,3 +53,58 @@ class RecommendationResponse(BaseModel):
     similar_places: list[dict[str, Any]]
     next_places: list[dict[str, Any]]
     recommendation_log: dict[str, Any]
+
+
+class ReceiptItem(BaseModel):
+    name: str
+    quantity: int
+    unitPrice: int
+    amount: int
+
+
+class ReceiptResult(BaseModel):
+    merchantName: str | None = None
+    businessNumber: str | None = None
+    transactionDate: str | None = None
+    transactionTime: str | None = None
+    address: str | None = None
+    approvalNumber: str | None = None
+    supplyAmount: int | None = None
+    vat: int | None = None
+    totalAmount: int
+    paymentMethod: str | None = None
+    items: list[ReceiptItem] = Field(default_factory=list)
+    confidence: float = Field(ge=0, le=1)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class ReceiptAnalysisResponse(BaseModel):
+    requestId: str | None = None
+    documentId: str | None = None
+    userId: int | None = None
+    documentType: Literal["RECEIPT"] = "RECEIPT"
+    status: Literal["COMPLETED"] = "COMPLETED"
+    result: ReceiptResult
+    warnings: list[str] = Field(default_factory=list)
+    processedAt: str
+    rawOcrCharCount: int = Field(ge=0)
+
+
+class ReceiptVisionUsage(BaseModel):
+    inputTokens: int = Field(ge=0)
+    outputTokens: int = Field(ge=0)
+    totalTokens: int = Field(ge=0)
+
+
+class GptReceiptAnalysisResponse(BaseModel):
+    requestId: str | None = None
+    documentId: str | None = None
+    userId: int | None = None
+    documentType: Literal["RECEIPT"] = "RECEIPT"
+    status: Literal["COMPLETED"] = "COMPLETED"
+    model: str
+    result: ReceiptResult
+    warnings: list[str] = Field(default_factory=list)
+    processedAt: str
+    processingTimeMs: int = Field(ge=0)
+    usage: ReceiptVisionUsage | None = None

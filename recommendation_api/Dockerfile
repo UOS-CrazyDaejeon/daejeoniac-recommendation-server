@@ -7,6 +7,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        tesseract-ocr \
+        tesseract-ocr-kor \
+        tesseract-ocr-eng \
+    && tesseract --list-langs | grep -q kor \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY recommendation_api/requirements.txt /tmp/requirements.txt
 RUN python -m pip install --no-cache-dir -r /tmp/requirements.txt \
     && rm /tmp/requirements.txt \

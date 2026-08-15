@@ -1,8 +1,9 @@
-# Daejeon Recommendation API
+# Daejeon Internal API
 
 Spring이 MySQL에서 조회한 장소 후보와 최근 선택 이력을 받아 기존
 `recommend_llm.py` 추천 파이프라인을 실행하는 내부 FastAPI 서비스다.
-Python 서비스는 MySQL에 직접 연결하지 않는다.
+영수증 이미지 업로드를 받아 Tesseract OCR 결과도 반환한다. Python
+서비스는 MySQL에 직접 연결하지 않는다.
 
 ## API
 
@@ -54,6 +55,133 @@ Content-Type: application/json
 }
 ```
 
+### 영수증 이미지 분석
+
+```http
+POST /api/v1/receipts/analyze
+Content-Type: multipart/form-data
+```
+
+| multipart 필드 | 조건 |
+| --- | --- |
+| `image` | 필수 영수증 이미지(JPEG, PNG, WebP, HEIC, HEIF), 기본 최대 10MB |
+| `requestId` | 선택 요청 추적 ID |
+| `documentId` | 선택 영수증 문서 ID |
+| `userId` | 선택 사용자 ID(정수) |
+
+로컬 이미지로 요청하는 예시는 다음과 같다.
+
+```bash
+curl --fail-with-body \
+  -F 'image=@/absolute/path/to/receipt.jpg;type=image/jpeg' \
+  -F 'requestId=req_001' \
+  -F 'documentId=doc_1001' \
+  -F 'userId=4' \
+  http://127.0.0.1:8000/api/v1/receipts/analyze
+```
+
+성공 응답은 Lambda 결과와 호환되는 camelCase 필드를 사용한다. OCR 원문은
+영수증 개인정보 보호를 위해 응답하지 않고 글자 수만 반환한다.
+
+```json
+{
+  "requestId": "req_001",
+  "documentId": "doc_1001",
+  "userId": 4,
+  "documentType": "RECEIPT",
+  "status": "COMPLETED",
+  "result": {
+    "merchantName": "카페 파도",
+    "businessNumber": "123-45-67890",
+    "transactionDate": "2026-08-01",
+    "transactionTime": "14:32",
+    "address": "대전광역시 유성구 대학로 291",
+    "approvalNumber": null,
+    "supplyAmount": 7273,
+    "vat": 727,
+    "totalAmount": 8000,
+    "paymentMethod": "신용카드",
+    "items": [],
+    "confidence": 1.0,
+    "warnings": []
+  },
+  "warnings": [],
+  "processedAt": "2026-08-15T12:00:00Z",
+  "rawOcrCharCount": 120
+}
+```
+
+이미지를 읽을 수 없거나 총액을 추출하지 못하면 `422`, 10MB를 초과하면
+`413`, 이미지가 아닌 Content-Type이면 `415`를 반환한다.
+
+### GPT-5 mini 영수증 분석
+
+기존 Tesseract 결과가 불명확할 때 비교하거나 fallback으로 호출할 수 있는
+별도 Vision 엔드포인트다.
+
+```http
+POST /api/v1/receipts/analyze-gpt-mini
+Content-Type: multipart/form-data
+```
+
+multipart 필드는 기존 `/api/v1/receipts/analyze`와 같다. HEIC/HEIF를 포함한
+휴대폰 이미지를 서버에서 방향 보정한 JPEG로 바꾼 다음 `gpt-5-mini`에
+전송한다. 호출 전 `recommendation_api/.env`에 `OPENAI_API_KEY`를 설정해야
+하며, 설정되지 않으면 `503 RECEIPT_VISION_NOT_CONFIGURED`를 반환한다.
+
+```bash
+curl --fail-with-body \
+  -F 'image=@/absolute/path/to/receipt.heic;type=image/heic' \
+  -F 'requestId=req_gpt_001' \
+  -F 'documentId=doc_1001' \
+  -F 'userId=4' \
+  http://127.0.0.1:8000/api/v1/receipts/analyze-gpt-mini
+```
+
+응답의 `processingTimeMs`와 `usage`로 지연 시간과 토큰 사용량을 비교할 수
+있다. `confidence`는 모델이 스스로 보고한 판독 확신도이므로 실제 정확도
+평가값으로 간주하지 말고, 정답을 기록한 여러 영수증으로 필드별 정확도를
+별도로 측정해야 한다.
+
+```json
+{
+  "requestId": "req_gpt_001",
+  "documentId": "doc_1001",
+  "userId": 4,
+  "documentType": "RECEIPT",
+  "status": "COMPLETED",
+  "model": "gpt-5-mini-2025-08-07",
+  "result": {
+    "merchantName": "카페 파도",
+    "businessNumber": "123-45-67890",
+    "transactionDate": "2026-08-01",
+    "transactionTime": "14:32",
+    "address": "대전광역시 유성구 대학로 291",
+    "approvalNumber": null,
+    "supplyAmount": 7273,
+    "vat": 727,
+    "totalAmount": 8000,
+    "paymentMethod": "신용카드",
+    "items": [],
+    "confidence": 0.93,
+    "warnings": []
+  },
+  "warnings": [],
+  "processedAt": "2026-08-15T12:00:00Z",
+  "processingTimeMs": 1260,
+  "usage": {
+    "inputTokens": 1100,
+    "outputTokens": 220,
+    "totalTokens": 1320
+  }
+}
+```
+
+GPT 호출 실패는 `502 RECEIPT_VISION_UPSTREAM_ERROR`, 이미지나 총액을
+판독하지 못한 경우는 `422 RECEIPT_ANALYSIS_FAILED`로 구분한다. Spring은
+먼저 기존 OCR API를 호출한 뒤 `422`이거나 응답의 `warnings`가 존재하는
+경우에만 이 엔드포인트를 호출하면 불필요한 외부 API 비용을 줄일 수 있다.
+
 ## 로컬 실행
 
 ### Python으로 실행
@@ -70,7 +198,13 @@ curl --fail http://127.0.0.1:8000/health
 ```
 
 OpenAI를 사용할 때만 `OPENAI_API_KEY`를 설정한다. 키가 없으면 기존
-추천 코드의 fallback scorer가 사용된다.
+추천 코드의 fallback scorer가 사용되지만 GPT 영수증 엔드포인트는 `503`을
+반환한다. `RECEIPT_VISION_MODEL`의 기본값은 `gpt-5-mini`, 이미지 세부 수준인
+`RECEIPT_VISION_DETAIL`의 기본값은 OCR에 적합한 `high`다.
+
+영수증 OCR은 Tesseract 한국어·영어 데이터가 필요하므로 Docker 실행을
+권장한다. Docker 이미지에는 필요한 Tesseract 패키지와 HEIC/HEIF 디코더가
+포함된다. 휴대폰 사진은 EXIF 방향을 보정하고 RGB로 변환한 뒤 OCR한다.
 
 ### Docker Compose로 실행
 
@@ -144,6 +278,36 @@ public Mono<RecommendationResponse> recommend(RecommendationRequest request) {
             .bodyToMono(RecommendationResponse.class);
 }
 ```
+
+Spring에서 받은 `MultipartFile`을 그대로 전달할 때는 다음 형태로 호출할
+수 있다.
+
+```java
+public Mono<ReceiptAnalysisResponse> analyzeReceipt(
+        MultipartFile image,
+        String requestId,
+        String documentId,
+        Long userId) {
+    MultipartBodyBuilder body = new MultipartBodyBuilder();
+    body.part("image", image.getResource())
+            .filename(image.getOriginalFilename())
+            .contentType(MediaType.parseMediaType(image.getContentType()));
+    body.part("requestId", requestId);
+    body.part("documentId", documentId);
+    body.part("userId", userId.toString());
+
+    return recommendationWebClient.post()
+            .uri("/api/v1/receipts/analyze")
+            .contentType(MediaType.MULTIPART_FORM_DATA)
+            .body(BodyInserters.fromMultipartData(body.build()))
+            .retrieve()
+            .bodyToMono(ReceiptAnalysisResponse.class);
+}
+```
+
+OCR는 CPU 작업이므로 동시 요청이 많아지면 API 컨테이너 복제 또는 별도
+OCR worker 분리를 검토한다. 현재 엔드포인트는 요청이 끝날 때까지 기다리는
+동기 방식이다.
 
 Spring은 호출마다 `request_id`를 만들고 양쪽 서버 로그에 남겨야 한다.
 FastAPI의 `400`, `422`, `500` 응답 본문도 Spring에서 그대로 기록하면
