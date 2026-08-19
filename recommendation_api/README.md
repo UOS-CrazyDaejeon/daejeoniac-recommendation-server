@@ -17,7 +17,90 @@ GET /health
 {"status": "ok"}
 ```
 
-### 추천 요청
+### 추천 API 구분
+
+| 목적 | 엔드포인트 | 실제 계산 결과 |
+| --- | --- | --- |
+| 선택 장소와 비슷한 장소 | `POST /api/v1/recommendations/similar-places` | `similar_places` 5개 |
+| 최근 이동 흐름에 맞는 다음 장소 | `POST /api/v1/recommendations/next-places` | `next_places` 5개와 추천 로그 |
+| 기존 통합 API | `POST /api/v1/recommendations` | 위 두 결과를 모두 계산하며 deprecated |
+
+분리 API를 사용하면 필요하지 않은 추천 모델을 함께 실행하지 않는다.
+
+### 선택한 장소와 비슷한 장소 추천
+
+```http
+POST /api/v1/recommendations/similar-places
+Content-Type: application/json
+```
+
+`selected_place`가 유사도 비교 기준이다. 장소의 카테고리, 태그, 설명과
+후보별 거리를 사용하며, OpenAI가 활성화되어 있으면 문맥 유사도도 함께
+평가한다. 이 요청에는 최근 이동 이력이나 현재 시각이 필요 없다. 아래
+`candidates` 값은 문서 가독성을 위한 축약 표기이며 실제 요청에는 장소 객체
+10개를 넣어야 한다.
+
+```json
+{
+  "request_id": "similar-001",
+  "session_id": "session-001",
+  "selected_place": {
+    "id": "place-100",
+    "name": "선택한 카페",
+    "latitude": 36.35,
+    "longitude": 127.38,
+    "category": "cafe",
+    "description": "조용한 로컬 카페",
+    "tags": ["조용한", "로컬", "커피"]
+  },
+  "visited_place_ids": [],
+  "candidates": ["Spring에서 조회한 장소 객체 정확히 10개"],
+  "context": {
+    "radius_m": 1000,
+    "top_k": 5
+  }
+}
+```
+
+응답에는 `selected_place_id`와 `similar_places`만 포함되고 `next_places`는
+계산하거나 반환하지 않는다.
+
+### 다음 장소 추천
+
+```http
+POST /api/v1/recommendations/next-places
+Content-Type: application/json
+```
+
+`current_place`, 최근 선택 장소인 `recent_places`, 시간·날씨 문맥을 사용해
+다음 이동 장소를 계산한다. 응답에는 `next_places`와 `recommendation_log`만
+포함되고 `similar_places`는 계산하지 않는다. 아래 `candidates`도 실제
+요청에서는 장소 객체 10개로 바꿔야 한다.
+
+```json
+{
+  "request_id": "next-001",
+  "session_id": "session-001",
+  "current_place": {
+    "id": "place-100",
+    "name": "현재 장소",
+    "latitude": 36.35,
+    "longitude": 127.38
+  },
+  "recent_places": [],
+  "visited_place_ids": [],
+  "candidates": ["Spring에서 조회한 장소 객체 정확히 10개"],
+  "context": {
+    "current_time": "2026-08-15T14:00:00+09:00",
+    "weather": "맑음",
+    "user_preferences": "조용한 장소",
+    "radius_m": 1000,
+    "top_k": 5
+  }
+}
+```
+
+### 기존 통합 추천 요청(deprecated)
 
 ```http
 POST /api/v1/recommendations
@@ -43,7 +126,9 @@ Content-Type: application/json
 `tags`를 함께 보내면 추천 점수에 반영된다.
 
 성공 응답에는 `similar_places` 5개, `next_places` 5개와 추천 노출 로그가
-포함된다. 오류 응답은 다음 형식으로 통일된다.
+포함된다. 기존 Spring 클라이언트의 호환성을 위해 남겨 두었으며, 신규
+호출부는 목적에 맞는 분리 API를 사용한다. 오류 응답은 다음 형식으로
+통일된다.
 
 ```json
 {
@@ -182,6 +267,191 @@ GPT 호출 실패는 `502 RECEIPT_VISION_UPSTREAM_ERROR`, 이미지나 총액을
 먼저 기존 OCR API를 호출한 뒤 `422`이거나 응답의 `warnings`가 존재하는
 경우에만 이 엔드포인트를 호출하면 불필요한 외부 API 비용을 줄일 수 있다.
 
+### S3 영수증 이미지 분석
+
+Spring은 이미지 파일이나 S3 URL 전체를 보내지 않고 버킷 내부 객체 키인
+`s3Key`만 보낸다. Python 서버는 `.env`에 고정된 버킷에서만 이미지를 읽는다.
+
+| 분석 방식 | 엔드포인트 |
+| --- | --- |
+| Tesseract OCR | `POST /api/v1/receipts/analyze-from-s3` |
+| GPT-5 Mini | `POST /api/v1/receipts/analyze-gpt-mini-from-s3` |
+
+두 API의 JSON 요청 형식은 같다.
+
+```json
+{
+  "requestId": "req-s3-001",
+  "documentId": "doc-1001",
+  "userId": 4,
+  "s3Key": "receipts/2026/08/receipt-001.heic"
+}
+```
+
+S3 설정은 `recommendation_api/.env`에 넣는다. 아래 점(`.`) 형식과 AWS 표준
+환경 변수(`AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
+`AWS_S3_BUCKET`)를 모두 지원한다.
+
+```dotenv
+aws.region=ap-northeast-2
+aws.access-key=
+aws.secret-key=
+aws.s3.bucket=uos-crazy-daejeon-images-521701612202-ap-northeast-2-an
+aws.s3.receipt-prefix=receipts/
+aws.s3.expected-bucket-owner=
+```
+
+`aws.s3.receipt-prefix`를 설정하면 다른 경로의 객체 키는 `400`으로 거절한다.
+`aws.s3.expected-bucket-owner`는 실제 버킷 소유 AWS 계정 ID를 확인한 경우에만
+설정한다.
+객체가 없으면 `404`, 10MB 초과는 `413`, 이미지가 아닌 객체는 `415`, S3
+호출 장애나 권한 오류는 `502`, 설정이나 자격 증명 누락은 `503`을 반환한다.
+
+EC2 운영 환경에서는 장기 액세스 키를 `.env`에 저장하지 않고 인스턴스 IAM
+Role에 다음과 같이 읽기 권한만 부여하는 방식을 권장한다. 이 경우
+`aws.access-key`, `aws.secret-key`는 비워 두면 Boto3가 Role의 임시 자격
+증명을 자동으로 사용한다.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::uos-crazy-daejeon-images-521701612202-ap-northeast-2-an/receipts/*"
+    }
+  ]
+}
+```
+
+- Boto3 자격 증명: https://docs.aws.amazon.com/boto3/latest/guide/credentials.html
+- S3 `GetObject`: https://docs.aws.amazon.com/boto3/latest/reference/services/s3/client/get_object.html
+
+### 얼굴 모자이크
+
+신원을 식별하는 얼굴 인식은 사용하지 않고, OpenCV YuNet으로 얼굴의
+위치만 검출해 픽셀 모자이크를 적용한다. YuNet ONNX 모델은 약 227KB이고
+CPU로 실행되므로 2 vCPU, 2GiB인 EC2 `t3.small`에서도 사용할 수 있다.
+
+운영 API는 S3에서 원본을 읽고 결과를 새 S3 객체로 저장한다.
+
+```http
+POST /api/v1/images/face-mosaic
+Content-Type: application/json
+```
+
+```json
+{
+  "requestId": "req-face-001",
+  "userId": 4,
+  "s3Key": "uploads/2026/08/photo-001.heic"
+}
+```
+
+응답의 `outputS3Key`를 Spring DB에 저장하면 된다.
+
+```json
+{
+  "requestId": "req-face-001",
+  "userId": 4,
+  "status": "COMPLETED",
+  "sourceS3Key": "uploads/2026/08/photo-001.heic",
+  "outputS3Key": "mosaics/8c3f...-mosaic.jpg",
+  "contentType": "image/jpeg",
+  "faceCount": 2,
+  "width": 1920,
+  "height": 1080,
+  "processedAt": "2026-08-16T12:00:00Z"
+}
+```
+
+`.env`의 추가 설정은 다음과 같다.
+
+```dotenv
+# 비우면 버킷의 모든 이미지 키를 입력으로 허용한다.
+aws.s3.image-prefix=uploads/
+aws.s3.mosaic-prefix=mosaics/
+
+# t3.small 권장값
+MAX_FACE_IMAGE_BYTES=10485760
+FACE_MAX_IMAGE_PIXELS=24000000
+FACE_OUTPUT_MAX_EDGE=2560
+FACE_DETECTION_MAX_EDGE=1280
+FACE_DETECTION_SCORE_THRESHOLD=0.75
+FACE_BOX_PADDING=0.18
+FACE_MOSAIC_BLOCK_SIZE=14
+FACE_OPENCV_THREADS=1
+FACE_MAX_CONCURRENT_JOBS=1
+```
+
+얼굴을 하나도 검출하지 못하면 비식별화되지 않은 원본을 공개하지
+않도록 `422 FACE_NOT_DETECTED`를 반환하고 S3에 결과를 저장하지 않는다.
+얼굴 검출은 100% 보장되지 않으므로 공개 전 검수 또는 사용자 확인 절차를
+추가하는 것이 좋다.
+
+EC2 IAM Role은 원본 경로의 `s3:GetObject`와 결과 경로의
+`s3:PutObject` 권한이 필요하다.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::uos-crazy-daejeon-images-521701612202-ap-northeast-2-an/uploads/*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::uos-crazy-daejeon-images-521701612202-ap-northeast-2-an/mosaics/*"
+    }
+  ]
+}
+```
+
+로컬 확인용 API는 요청 경로 끝에 `-local`을 붙였다. S3 설정 없이
+파일을 바로 올리고 결과 JPEG를 저장할 수 있다.
+
+```bash
+curl --fail-with-body \
+  -X POST \
+  -F "image=@/absolute/path/photo.heic" \
+  http://127.0.0.1:8000/api/v1/images/face-mosaic-local \
+  --output face-mosaic.jpg
+```
+
+Spring `WebClient` 요청 예시는 다음과 같다.
+
+```java
+public record FaceMosaicRequest(String requestId, Long userId, String s3Key) {}
+
+public record FaceMosaicResponse(
+        String requestId,
+        Long userId,
+        String status,
+        String sourceS3Key,
+        String outputS3Key,
+        String contentType,
+        int faceCount,
+        int width,
+        int height,
+        String processedAt) {}
+
+public Mono<FaceMosaicResponse> mosaicFaces(String s3Key, Long userId) {
+    var request = new FaceMosaicRequest(
+            UUID.randomUUID().toString(), userId, s3Key);
+
+    return recommendationWebClient.post()
+            .uri("/api/v1/images/face-mosaic")
+            .contentType(MediaType.APPLICATION_JSON)
+            .bodyValue(request)
+            .retrieve()
+            .bodyToMono(FaceMosaicResponse.class);
+}
+```
+
 ## 로컬 실행
 
 ### Python으로 실행
@@ -270,14 +540,48 @@ WebClient recommendationWebClient(
 ```
 
 ```java
-public Mono<RecommendationResponse> recommend(RecommendationRequest request) {
+public Mono<SimilarPlacesResponse> recommendSimilarPlaces(
+        SimilarPlacesRequest request) {
     return recommendationWebClient.post()
-            .uri("/api/v1/recommendations")
+            .uri("/api/v1/recommendations/similar-places")
             .bodyValue(request)
             .retrieve()
-            .bodyToMono(RecommendationResponse.class);
+            .bodyToMono(SimilarPlacesResponse.class);
+}
+
+public Mono<NextPlacesResponse> recommendNextPlaces(NextPlacesRequest request) {
+    return recommendationWebClient.post()
+            .uri("/api/v1/recommendations/next-places")
+            .bodyValue(request)
+            .retrieve()
+            .bodyToMono(NextPlacesResponse.class);
 }
 ```
+
+Spring이 S3 업로드를 마친 뒤 Python에 객체 키를 전달하는 코드는 다음처럼
+구성할 수 있다.
+
+```java
+public record S3ReceiptAnalysisRequest(
+        String requestId,
+        String documentId,
+        Long userId,
+        String s3Key) {
+}
+
+public Mono<ReceiptAnalysisResponse> analyzeReceiptFromS3(
+        S3ReceiptAnalysisRequest request) {
+    return recommendationWebClient.post()
+            .uri("/api/v1/receipts/analyze-from-s3")
+            .contentType(MediaType.APPLICATION_JSON)
+            .bodyValue(request)
+            .retrieve()
+            .bodyToMono(ReceiptAnalysisResponse.class);
+}
+```
+
+GPT-5 Mini로 분석하려면 요청 본문은 그대로 두고 URI만
+`/api/v1/receipts/analyze-gpt-mini-from-s3`로 바꾼다.
 
 Spring에서 받은 `MultipartFile`을 그대로 전달할 때는 다음 형태로 호출할
 수 있다.

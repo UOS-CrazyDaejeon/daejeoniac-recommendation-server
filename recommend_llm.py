@@ -1760,24 +1760,65 @@ def recommend_similar_places_with_scorer(
     ]
 
 
-def process_spring_recommendation_request(
+def _validate_split_recommendation_request(
     request: dict[str, Any],
-    transition_scorer: TransitionScorer | None = None,
-    similarity_scorer: SimilarityScorer | None = None,
-) -> dict[str, Any]:
-    """Spring이 보낸 후보 10개만 사용해 두 종류의 추천을 즉시 계산한다."""
-    _validate_spring_request(request)
-    current_place = request["current_place"]
+    *,
+    place_field: str,
+    require_recent_places: bool,
+) -> None:
+    if not isinstance(request, dict):
+        raise ValueError("추천 요청은 JSON 객체여야 합니다")
+
+    required = {
+        "request_id",
+        "session_id",
+        place_field,
+        "visited_place_ids",
+        "candidates",
+        "context",
+    }
+    if require_recent_places:
+        required.add("recent_places")
+    missing = required - request.keys()
+    if missing:
+        raise ValueError(f"추천 요청 필드가 누락되었습니다: {sorted(missing)}")
+
+    candidates = request["candidates"]
+    if not isinstance(candidates, list) or len(candidates) != 10:
+        raise ValueError("candidates는 정확히 10개여야 합니다")
+    candidate_ids = [str(candidate.get("id", "")) for candidate in candidates]
+    if "" in candidate_ids or len(set(candidate_ids)) != len(candidate_ids):
+        raise ValueError("candidate id는 비어 있지 않고 중복되지 않아야 합니다")
+
+    if require_recent_places:
+        recent_places = request["recent_places"]
+        if not isinstance(recent_places, list) or len(recent_places) > 4:
+            raise ValueError("recent_places는 최대 4개여야 합니다")
+
+    context = request["context"]
+    if not isinstance(context, dict) or context.get("top_k") != 5:
+        raise ValueError("top_k는 5로 고정되어야 합니다")
+    if require_recent_places and not str(context.get("current_time", "")).strip():
+        raise ValueError("다음 장소 추천에는 current_time이 필요합니다")
+    radius_m = float(context.get("radius_m", MAX_CANDIDATE_RADIUS_M))
+    if not 0 < radius_m <= MAX_CANDIDATE_RADIUS_M:
+        raise ValueError("radius_m은 0보다 크고 1000 이하여야 합니다")
+
+
+def _eligible_candidates_within_radius(
+    current_place: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    visited_place_ids: Sequence[str],
+    radius_m: float,
+) -> list[dict[str, Any]]:
     current_lat = _coordinate(current_place, "latitude", "lat")
     current_lng = _coordinate(current_place, "longitude", "lng")
-    radius_m = float(request["context"]["radius_m"])
-    visited_ids = {str(place_id) for place_id in request["visited_place_ids"]}
-    excluded_ids = visited_ids | {str(current_place["id"])}
-
+    excluded_ids = {str(place_id) for place_id in visited_place_ids} | {
+        str(current_place["id"])
+    }
     eligible_candidates: list[dict[str, Any]] = []
-    for candidate in request["candidates"]:
-        place_id = str(candidate["id"])
-        if place_id in excluded_ids:
+    for candidate in candidates:
+        if str(candidate["id"]) in excluded_ids:
             continue
         distance_m = haversine_distance(
             current_lat,
@@ -1794,15 +1835,62 @@ def process_spring_recommendation_request(
         )
         eligible_candidates.append(normalized)
 
-    if len(eligible_candidates) < max(SIMILAR_TOP_K, NEXT_TOP_K):
-        raise ValueError("1km 이내의 미방문 후보가 최소 5개 필요합니다")
+    if len(eligible_candidates) < 5:
+        raise ValueError("반경 내의 미방문 후보가 최소 5개 필요합니다")
+    return eligible_candidates
 
-    similarity_scorer = similarity_scorer or create_default_similarity_scorer()
+
+def process_spring_similar_places_request(
+    request: dict[str, Any],
+    similarity_scorer: SimilarityScorer | None = None,
+) -> dict[str, Any]:
+    """선택한 장소와 비슷한 장소만 계산한다."""
+    _validate_split_recommendation_request(
+        request,
+        place_field="selected_place",
+        require_recent_places=False,
+    )
+    selected_place = request["selected_place"]
+    eligible_candidates = _eligible_candidates_within_radius(
+        current_place=selected_place,
+        candidates=request["candidates"],
+        visited_place_ids=request["visited_place_ids"],
+        radius_m=float(request["context"]["radius_m"]),
+    )
+    scorer = similarity_scorer or create_default_similarity_scorer()
     similar_places = recommend_similar_places_with_scorer(
-        current_place=current_place,
+        current_place=selected_place,
         candidates=eligible_candidates,
-        scorer=similarity_scorer,
+        scorer=scorer,
         top_k=SIMILAR_TOP_K,
+    )
+    return {
+        "request_id": str(request["request_id"]),
+        "session_id": str(request["session_id"]),
+        "generated_at": datetime.now().astimezone().isoformat(),
+        "selected_place_id": str(selected_place["id"]),
+        "similar_places": similar_places,
+    }
+
+
+def process_spring_next_places_request(
+    request: dict[str, Any],
+    transition_scorer: TransitionScorer | None = None,
+) -> dict[str, Any]:
+    """현재 위치와 최근 선택 흐름을 사용해 다음 장소만 계산한다."""
+    _validate_split_recommendation_request(
+        request,
+        place_field="current_place",
+        require_recent_places=True,
+    )
+    current_place = request["current_place"]
+    current_lat = _coordinate(current_place, "latitude", "lat")
+    current_lng = _coordinate(current_place, "longitude", "lng")
+    eligible_candidates = _eligible_candidates_within_radius(
+        current_place=current_place,
+        candidates=request["candidates"],
+        visited_place_ids=request["visited_place_ids"],
+        radius_m=float(request["context"]["radius_m"]),
     )
 
     graph_places = [_to_graph_place(current_place)]
@@ -1849,11 +1937,7 @@ def process_spring_recommendation_request(
     next_places = [
         {"rank": rank, **place}
         for rank, place in enumerate(
-            (
-                place
-                for place in next_places
-                if place["place_id"] in candidate_ids
-            ),
+            (place for place in next_places if place["place_id"] in candidate_ids),
             start=1,
         )
     ][:NEXT_TOP_K]
@@ -1870,9 +1954,60 @@ def process_spring_recommendation_request(
         "session_id": str(request["session_id"]),
         "generated_at": datetime.now().astimezone().isoformat(),
         "current_place_id": str(current_place["id"]),
-        "similar_places": similar_places,
         "next_places": next_places,
         "recommendation_log": recommendation_log,
+    }
+
+
+def process_spring_recommendation_request(
+    request: dict[str, Any],
+    transition_scorer: TransitionScorer | None = None,
+    similarity_scorer: SimilarityScorer | None = None,
+) -> dict[str, Any]:
+    """기존 통합 계약을 위해 유사 장소와 다음 장소 결과를 함께 반환한다."""
+    _validate_spring_request(request)
+    similar_response = process_spring_similar_places_request(
+        {
+            "request_id": request["request_id"],
+            "session_id": request["session_id"],
+            "selected_place": request["current_place"],
+            "visited_place_ids": request["visited_place_ids"],
+            "candidates": request["candidates"],
+            "context": {
+                "radius_m": request["context"]["radius_m"],
+                "top_k": request["context"]["similar_top_k"],
+            },
+        },
+        similarity_scorer=similarity_scorer,
+    )
+    next_response = process_spring_next_places_request(
+        {
+            "request_id": request["request_id"],
+            "session_id": request["session_id"],
+            "current_place": request["current_place"],
+            "recent_places": request["recent_places"],
+            "visited_place_ids": request["visited_place_ids"],
+            "candidates": request["candidates"],
+            "context": {
+                "current_time": request["context"]["current_time"],
+                "weather": request["context"].get("weather"),
+                "user_preferences": request["context"].get(
+                    "user_preferences", ""
+                ),
+                "radius_m": request["context"]["radius_m"],
+                "top_k": request["context"]["next_top_k"],
+            },
+        },
+        transition_scorer=transition_scorer,
+    )
+    return {
+        "request_id": str(request["request_id"]),
+        "session_id": str(request["session_id"]),
+        "generated_at": datetime.now().astimezone().isoformat(),
+        "current_place_id": str(request["current_place"]["id"]),
+        "similar_places": similar_response["similar_places"],
+        "next_places": next_response["next_places"],
+        "recommendation_log": next_response["recommendation_log"],
     }
 
 

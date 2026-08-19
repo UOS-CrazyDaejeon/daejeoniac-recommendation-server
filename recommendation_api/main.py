@@ -6,9 +6,23 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, File, Form, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
-from recommend_llm import process_spring_recommendation_request
+from recommend_llm import (
+    process_spring_next_places_request,
+    process_spring_recommendation_request,
+    process_spring_similar_places_request,
+)
+from recommendation_api.face_mosaic import (
+    FaceMosaicError,
+    FaceMosaicResult,
+    mosaic_face_image_bytes,
+)
+from recommendation_api.face_mosaic_s3 import (
+    S3MosaicUploadError,
+    load_s3_face_image,
+    store_s3_mosaic_image,
+)
 from recommendation_api.receipt_gpt import (
     ReceiptVisionConfigurationError,
     ReceiptVisionUpstreamError,
@@ -18,26 +32,102 @@ from recommendation_api.receipt_ocr import (
     ReceiptDocumentError,
     analyze_receipt_image_bytes,
 )
+from recommendation_api.receipt_s3 import (
+    S3ReceiptError,
+    S3ReceiptObject,
+    load_s3_receipt_object,
+)
 from recommendation_api.schemas import (
+    FaceMosaicResponse,
     GptReceiptAnalysisResponse,
+    NextPlacesRequest,
+    NextPlacesResponse,
     ReceiptAnalysisResponse,
     RecommendationRequest,
     RecommendationResponse,
+    SimilarPlacesRequest,
+    SimilarPlacesResponse,
+    S3FaceMosaicRequest,
+    S3ReceiptAnalysisRequest,
 )
 
 
 RecommendationProcessor = Callable[[dict[str, Any]], dict[str, Any]]
 ReceiptProcessor = Callable[[bytes, str], dict[str, Any]]
 GptReceiptProcessor = Callable[[bytes, str], dict[str, Any]]
+S3ImageLoader = Callable[[str], S3ReceiptObject]
+FaceMosaicProcessor = Callable[[bytes, str], FaceMosaicResult]
+S3MosaicUploader = Callable[[FaceMosaicResult], str]
 logger = logging.getLogger(__name__)
 
 MAX_RECEIPT_IMAGE_BYTES = int(
     os.environ.get("MAX_RECEIPT_IMAGE_BYTES", 10 * 1024 * 1024)
 )
 OCR_LANGUAGE = os.environ.get("OCR_LANGUAGE", "kor+eng").strip() or "kor+eng"
+MAX_FACE_IMAGE_BYTES = int(
+    os.environ.get("MAX_FACE_IMAGE_BYTES", 10 * 1024 * 1024)
+)
 
 
-app = FastAPI(title="Daejeon Internal API", version="1.2.0")
+app = FastAPI(
+    title="대전 관광 추천 내부 API",
+    description=(
+        "Spring 서버에서 전달한 장소 후보를 바탕으로 유사 장소와 다음 장소를 "
+        "추천하고, 영수증 구조화와 사진의 얼굴 모자이크를 "
+        "처리하는 내부 API입니다."
+    ),
+    version="1.5.0",
+    openapi_tags=[
+        {
+            "name": "운영",
+            "description": "서버 실행 상태를 확인하는 운영용 API입니다.",
+        },
+        {
+            "name": "장소 추천",
+            "description": "선택 장소와 비슷한 장소 또는 다음 이동 장소를 추천합니다.",
+        },
+        {
+            "name": "영수증 분석",
+            "description": "영수증 이미지를 OCR 또는 GPT Vision으로 분석합니다.",
+        },
+        {
+            "name": "이미지 비식별화",
+            "description": "사진에서 얼굴을 찾아 모자이크 처리합니다.",
+        },
+    ],
+)
+
+RECOMMENDATION_ERROR_RESPONSES = {
+    400: {"description": "추천 요청 데이터 오류"},
+    422: {"description": "요청 형식 검증 오류"},
+    500: {"description": "추천 처리 서버 오류"},
+}
+RECEIPT_ERROR_RESPONSES = {
+    413: {"description": "이미지 용량 제한 초과"},
+    415: {"description": "지원하지 않는 파일 형식"},
+    422: {"description": "영수증 판독 실패 또는 요청 형식 검증 오류"},
+    500: {"description": "영수증 처리 서버 오류"},
+}
+GPT_RECEIPT_ERROR_RESPONSES = {
+    **RECEIPT_ERROR_RESPONSES,
+    502: {"description": "OpenAI API 호출 또는 응답 오류"},
+    503: {"description": "OpenAI API 설정 누락"},
+}
+S3_IMAGE_ERROR_RESPONSES = {
+    400: {"description": "S3 객체 키 오류"},
+    404: {"description": "S3 이미지를 찾을 수 없음"},
+    413: {"description": "이미지 용량 제한 초과"},
+    415: {"description": "지원하지 않는 파일 형식"},
+    422: {"description": "얼굴 검출 또는 이미지 처리 실패"},
+    502: {"description": "S3 읽기 또는 저장 실패"},
+    503: {"description": "S3 또는 얼굴 검출 설정 누락"},
+}
+LOCAL_FACE_ERROR_RESPONSES = {
+    413: {"description": "이미지 용량 제한 초과"},
+    415: {"description": "지원하지 않는 파일 형식"},
+    422: {"description": "얼굴 검출 또는 이미지 처리 실패"},
+    503: {"description": "얼굴 검출 설정 누락"},
+}
 
 
 def _error_response(
@@ -65,6 +155,17 @@ def _request_id_from_body(body: Any) -> str | None:
     return str(request_id) if request_id is not None else None
 
 
+def _face_s3_error_code(error_code: str) -> str:
+    return {
+        "S3_RECEIPT_NOT_CONFIGURED": "S3_IMAGE_NOT_CONFIGURED",
+        "INVALID_S3_RECEIPT_KEY": "INVALID_S3_IMAGE_KEY",
+        "S3_RECEIPT_NOT_FOUND": "S3_IMAGE_NOT_FOUND",
+        "RECEIPT_IMAGE_TOO_LARGE": "FACE_IMAGE_TOO_LARGE",
+        "UNSUPPORTED_RECEIPT_MEDIA_TYPE": "UNSUPPORTED_IMAGE_MEDIA_TYPE",
+        "S3_RECEIPT_ACCESS_FAILED": "S3_IMAGE_ACCESS_FAILED",
+    }.get(error_code, error_code)
+
+
 @app.exception_handler(RequestValidationError)
 def handle_request_validation_error(
     request: Request,
@@ -78,13 +179,27 @@ def handle_request_validation_error(
     )
 
 
-@app.get("/health", tags=["operations"])
+@app.get(
+    "/health",
+    tags=["운영"],
+    summary="서버 상태 확인",
+    description="API 서버가 정상적으로 요청을 받을 수 있는지 확인합니다.",
+    response_description="서버 상태",
+)
 def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
 def get_recommendation_processor() -> RecommendationProcessor:
     return process_spring_recommendation_request
+
+
+def get_similar_places_processor() -> RecommendationProcessor:
+    return process_spring_similar_places_request
+
+
+def get_next_places_processor() -> RecommendationProcessor:
+    return process_spring_next_places_request
 
 
 def get_receipt_processor() -> ReceiptProcessor:
@@ -98,10 +213,40 @@ def get_gpt_receipt_processor() -> GptReceiptProcessor:
     return analyze_receipt_image_with_gpt
 
 
+def get_s3_receipt_loader() -> S3ImageLoader:
+    return lambda s3_key: load_s3_receipt_object(
+        s3_key,
+        max_bytes=MAX_RECEIPT_IMAGE_BYTES,
+    )
+
+
+def get_s3_face_image_loader() -> S3ImageLoader:
+    return lambda s3_key: load_s3_face_image(
+        s3_key,
+        max_bytes=MAX_FACE_IMAGE_BYTES,
+    )
+
+
+def get_face_mosaic_processor() -> FaceMosaicProcessor:
+    return mosaic_face_image_bytes
+
+
+def get_s3_mosaic_uploader() -> S3MosaicUploader:
+    return lambda result: store_s3_mosaic_image(result)
+
+
 @app.post(
     "/api/v1/recommendations",
     response_model=RecommendationResponse,
-    tags=["recommendations"],
+    tags=["장소 추천"],
+    summary="통합 장소 추천(기존 API)",
+    description=(
+        "선택 장소와 비슷한 장소 5개와 다음 이동 장소 5개를 한 번에 계산합니다. "
+        "기존 Spring 클라이언트 호환용이며 신규 연동은 분리된 추천 API를 사용합니다."
+    ),
+    response_description="유사 장소와 다음 장소 통합 추천 결과",
+    responses=RECOMMENDATION_ERROR_RESPONSES,
+    deprecated=True,
 )
 def create_recommendations(
     request: RecommendationRequest,
@@ -130,18 +275,100 @@ def create_recommendations(
 
 
 @app.post(
+    "/api/v1/recommendations/similar-places",
+    response_model=SimilarPlacesResponse,
+    tags=["장소 추천"],
+    summary="선택 장소와 비슷한 장소 추천",
+    description=(
+        "사용자가 선택한 장소를 기준으로 카테고리, 태그, 설명과 거리가 "
+        "비슷한 후보 장소 5개를 추천합니다. 다음 장소 추천은 실행하지 않습니다."
+    ),
+    response_description="선택 장소와 비슷한 장소 5개",
+    responses=RECOMMENDATION_ERROR_RESPONSES,
+)
+def create_similar_place_recommendations(
+    request: SimilarPlacesRequest,
+    processor: RecommendationProcessor = Depends(get_similar_places_processor),
+) -> dict[str, Any] | JSONResponse:
+    try:
+        return processor(request.model_dump(mode="json"))
+    except ValueError as exc:
+        return _error_response(
+            status_code=400,
+            code="INVALID_SIMILAR_PLACES_REQUEST",
+            message=str(exc),
+            request_id=request.request_id,
+        )
+    except Exception:
+        logger.exception(
+            "Unexpected similar-place failure request_id=%s",
+            request.request_id,
+        )
+        return _error_response(
+            status_code=500,
+            code="INTERNAL_SERVER_ERROR",
+            message="비슷한 장소 추천 처리 중 오류가 발생했습니다",
+            request_id=request.request_id,
+        )
+
+
+@app.post(
+    "/api/v1/recommendations/next-places",
+    response_model=NextPlacesResponse,
+    tags=["장소 추천"],
+    summary="다음 이동 장소 추천",
+    description=(
+        "현재 장소, 최근 선택 이력, 시간과 날씨를 바탕으로 다음 이동에 적합한 "
+        "장소 5개를 추천합니다. 유사 장소 추천은 실행하지 않습니다."
+    ),
+    response_description="다음 이동 장소 5개와 추천 로그",
+    responses=RECOMMENDATION_ERROR_RESPONSES,
+)
+def create_next_place_recommendations(
+    request: NextPlacesRequest,
+    processor: RecommendationProcessor = Depends(get_next_places_processor),
+) -> dict[str, Any] | JSONResponse:
+    try:
+        return processor(request.model_dump(mode="json"))
+    except ValueError as exc:
+        return _error_response(
+            status_code=400,
+            code="INVALID_NEXT_PLACES_REQUEST",
+            message=str(exc),
+            request_id=request.request_id,
+        )
+    except Exception:
+        logger.exception(
+            "Unexpected next-place failure request_id=%s",
+            request.request_id,
+        )
+        return _error_response(
+            status_code=500,
+            code="INTERNAL_SERVER_ERROR",
+            message="다음 장소 추천 처리 중 오류가 발생했습니다",
+            request_id=request.request_id,
+        )
+
+
+@app.post(
     "/api/v1/receipts/analyze",
     response_model=ReceiptAnalysisResponse,
-    tags=["receipts"],
+    tags=["영수증 분석"],
+    summary="영수증 OCR 분석",
+    description=(
+        "업로드한 영수증 이미지를 Tesseract OCR로 읽어 상호명, 결제 시각, "
+        "총액과 품목 등의 구조화된 정보를 반환합니다."
+    ),
+    response_description="OCR로 추출한 영수증 정보",
+    responses=RECEIPT_ERROR_RESPONSES,
 )
 def analyze_receipt(
     image: UploadFile = File(..., description="OCR 처리할 영수증 이미지"),
-    requestId: str | None = Form(default=None),
-    documentId: str | None = Form(default=None),
-    userId: int | None = Form(default=None),
+    requestId: str | None = Form(default=None, description="요청 추적 ID"),
+    documentId: str | None = Form(default=None, description="영수증 문서 ID"),
+    userId: int | None = Form(default=None, description="사용자 ID"),
     processor: ReceiptProcessor = Depends(get_receipt_processor),
 ) -> dict[str, Any] | JSONResponse:
-    """Analyze one uploaded receipt image and return structured receipt data."""
     if image.content_type and not (
         image.content_type.startswith("image/")
         or image.content_type == "application/octet-stream"
@@ -202,16 +429,22 @@ def analyze_receipt(
 @app.post(
     "/api/v1/receipts/analyze-gpt-mini",
     response_model=GptReceiptAnalysisResponse,
-    tags=["receipts"],
+    tags=["영수증 분석"],
+    summary="GPT-5 Mini 영수증 분석",
+    description=(
+        "업로드한 영수증 이미지를 GPT-5 Mini Vision으로 분석해 구조화된 정보를 "
+        "반환합니다. 처리 시간과 토큰 사용량도 함께 제공합니다."
+    ),
+    response_description="GPT-5 Mini가 추출한 영수증 정보",
+    responses=GPT_RECEIPT_ERROR_RESPONSES,
 )
 def analyze_receipt_with_gpt_mini(
     image: UploadFile = File(..., description="GPT로 분석할 영수증 이미지"),
-    requestId: str | None = Form(default=None),
-    documentId: str | None = Form(default=None),
-    userId: int | None = Form(default=None),
+    requestId: str | None = Form(default=None, description="요청 추적 ID"),
+    documentId: str | None = Form(default=None, description="영수증 문서 ID"),
+    userId: int | None = Form(default=None, description="사용자 ID"),
     processor: GptReceiptProcessor = Depends(get_gpt_receipt_processor),
 ) -> dict[str, Any] | JSONResponse:
-    """Analyze one receipt image using the configured gpt-5-mini model."""
     if image.content_type and not (
         image.content_type.startswith("image/")
         or image.content_type == "application/octet-stream"
@@ -289,4 +522,282 @@ def analyze_receipt_with_gpt_mini(
             code="INTERNAL_SERVER_ERROR",
             message="GPT 영수증 처리 중 오류가 발생했습니다",
             request_id=requestId,
+        )
+
+
+def _completed_ocr_receipt_response(
+    analysis: dict[str, Any],
+    request: S3ReceiptAnalysisRequest,
+) -> dict[str, Any]:
+    result = analysis["result"]
+    return {
+        "requestId": request.requestId,
+        "documentId": request.documentId,
+        "userId": request.userId,
+        "documentType": "RECEIPT",
+        "status": "COMPLETED",
+        "result": result,
+        "warnings": result.get("warnings", []),
+        "processedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "rawOcrCharCount": len(analysis.get("rawOcrText", "")),
+    }
+
+
+def _completed_gpt_receipt_response(
+    analysis: dict[str, Any],
+    request: S3ReceiptAnalysisRequest,
+) -> dict[str, Any]:
+    result = analysis["result"]
+    return {
+        "requestId": request.requestId,
+        "documentId": request.documentId,
+        "userId": request.userId,
+        "documentType": "RECEIPT",
+        "status": "COMPLETED",
+        "model": analysis["model"],
+        "result": result,
+        "warnings": result.get("warnings", []),
+        "processedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "processingTimeMs": analysis["processingTimeMs"],
+        "usage": analysis.get("usage"),
+    }
+
+
+@app.post(
+    "/api/v1/receipts/analyze-from-s3",
+    response_model=ReceiptAnalysisResponse,
+    tags=["영수증 분석"],
+    summary="S3 영수증 OCR 분석",
+    description=(
+        "Spring이 전달한 S3 객체 키로 영수증 이미지를 읽어 "
+        "Tesseract OCR로 분석합니다."
+    ),
+    response_description="S3 이미지에서 추출한 영수증 정보",
+    responses=S3_IMAGE_ERROR_RESPONSES,
+)
+def analyze_receipt_from_s3(
+    request: S3ReceiptAnalysisRequest,
+    loader: S3ImageLoader = Depends(get_s3_receipt_loader),
+    processor: ReceiptProcessor = Depends(get_receipt_processor),
+) -> dict[str, Any] | JSONResponse:
+    try:
+        source = loader(request.s3Key)
+        analysis = processor(source.image_bytes, OCR_LANGUAGE)
+        return _completed_ocr_receipt_response(analysis, request)
+    except S3ReceiptError as exc:
+        return _error_response(
+            exc.status_code,
+            exc.error_code,
+            str(exc),
+            request.requestId,
+        )
+    except ReceiptDocumentError as exc:
+        return _error_response(
+            422,
+            "RECEIPT_ANALYSIS_FAILED",
+            str(exc),
+            request.requestId,
+        )
+    except Exception:
+        logger.exception("Unexpected S3 receipt failure request_id=%s", request.requestId)
+        return _error_response(
+            500,
+            "INTERNAL_SERVER_ERROR",
+            "S3 영수증 처리 중 오류가 발생했습니다",
+            request.requestId,
+        )
+
+
+@app.post(
+    "/api/v1/receipts/analyze-gpt-mini-from-s3",
+    response_model=GptReceiptAnalysisResponse,
+    tags=["영수증 분석"],
+    summary="S3 영수증 GPT-5 Mini 분석",
+    description=(
+        "Spring이 전달한 S3 객체 키로 영수증 이미지를 읽어 "
+        "GPT-5 Mini Vision으로 분석합니다."
+    ),
+    response_description="GPT-5 Mini가 추출한 S3 영수증 정보",
+    responses=S3_IMAGE_ERROR_RESPONSES,
+)
+def analyze_receipt_with_gpt_mini_from_s3(
+    request: S3ReceiptAnalysisRequest,
+    loader: S3ImageLoader = Depends(get_s3_receipt_loader),
+    processor: GptReceiptProcessor = Depends(get_gpt_receipt_processor),
+) -> dict[str, Any] | JSONResponse:
+    try:
+        source = loader(request.s3Key)
+        analysis = processor(source.image_bytes, source.content_type)
+        return _completed_gpt_receipt_response(analysis, request)
+    except S3ReceiptError as exc:
+        return _error_response(
+            exc.status_code,
+            exc.error_code,
+            str(exc),
+            request.requestId,
+        )
+    except ReceiptVisionConfigurationError as exc:
+        return _error_response(
+            503,
+            "RECEIPT_VISION_NOT_CONFIGURED",
+            str(exc),
+            request.requestId,
+        )
+    except ReceiptDocumentError as exc:
+        return _error_response(
+            422,
+            "RECEIPT_ANALYSIS_FAILED",
+            str(exc),
+            request.requestId,
+        )
+    except ReceiptVisionUpstreamError as exc:
+        return _error_response(
+            502,
+            "RECEIPT_VISION_UPSTREAM_ERROR",
+            str(exc),
+            request.requestId,
+        )
+    except Exception:
+        logger.exception(
+            "Unexpected GPT S3 receipt failure request_id=%s",
+            request.requestId,
+        )
+        return _error_response(
+            500,
+            "INTERNAL_SERVER_ERROR",
+            "S3 GPT 영수증 처리 중 오류가 발생했습니다",
+            request.requestId,
+        )
+
+
+@app.post(
+    "/api/v1/images/face-mosaic",
+    response_model=FaceMosaicResponse,
+    tags=["이미지 비식별화"],
+    summary="S3 이미지 얼굴 모자이크",
+    description=(
+        "Spring이 전달한 S3 객체 키로 원본을 읽고, YuNet으로 얼굴을 "
+        "검출해 모자이크한 JPEG을 S3의 새 객체로 저장합니다."
+    ),
+    response_description="모자이크 결과의 S3 객체 키와 검출한 얼굴 수",
+    responses=S3_IMAGE_ERROR_RESPONSES,
+)
+def mosaic_s3_image_faces(
+    request: S3FaceMosaicRequest,
+    loader: S3ImageLoader = Depends(get_s3_face_image_loader),
+    processor: FaceMosaicProcessor = Depends(get_face_mosaic_processor),
+    uploader: S3MosaicUploader = Depends(get_s3_mosaic_uploader),
+) -> dict[str, Any] | JSONResponse:
+    try:
+        source = loader(request.s3Key)
+        result = processor(source.image_bytes, source.content_type)
+        output_key = uploader(result)
+        return {
+            "requestId": request.requestId,
+            "userId": request.userId,
+            "status": "COMPLETED",
+            "sourceS3Key": source.key,
+            "outputS3Key": output_key,
+            "contentType": result.content_type,
+            "faceCount": result.face_count,
+            "width": result.width,
+            "height": result.height,
+            "processedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        }
+    except S3ReceiptError as exc:
+        return _error_response(
+            exc.status_code,
+            _face_s3_error_code(exc.error_code),
+            str(exc),
+            request.requestId,
+        )
+    except S3MosaicUploadError as exc:
+        return _error_response(
+            exc.status_code,
+            exc.error_code,
+            str(exc),
+            request.requestId,
+        )
+    except FaceMosaicError as exc:
+        return _error_response(
+            exc.status_code,
+            exc.error_code,
+            str(exc),
+            request.requestId,
+        )
+    except Exception:
+        logger.exception("Unexpected face mosaic failure request_id=%s", request.requestId)
+        return _error_response(
+            500,
+            "INTERNAL_SERVER_ERROR",
+            "얼굴 모자이크 처리 중 오류가 발생했습니다",
+            request.requestId,
+        )
+
+
+@app.post(
+    "/api/v1/images/face-mosaic-local",
+    response_class=Response,
+    tags=["이미지 비식별화"],
+    summary="로컬 이미지 얼굴 모자이크",
+    description=(
+        "로컬에서 multipart/form-data로 올린 이미지의 얼굴을 모자이크하고 "
+        "JPEG 파일을 바로 반환합니다. S3는 사용하지 않습니다."
+    ),
+    response_description="얼굴이 모자이크된 JPEG 이미지",
+    responses=LOCAL_FACE_ERROR_RESPONSES,
+)
+def mosaic_local_image_faces(
+    image: UploadFile = File(..., description="얼굴을 모자이크할 이미지"),
+    processor: FaceMosaicProcessor = Depends(get_face_mosaic_processor),
+) -> Response:
+    if image.content_type and not (
+        image.content_type.startswith("image/")
+        or image.content_type == "application/octet-stream"
+    ):
+        return _error_response(
+            415,
+            "UNSUPPORTED_IMAGE_MEDIA_TYPE",
+            "이미지 파일만 업로드할 수 있습니다",
+            None,
+        )
+
+    image_bytes = image.file.read(MAX_FACE_IMAGE_BYTES + 1)
+    if len(image_bytes) > MAX_FACE_IMAGE_BYTES:
+        return _error_response(
+            413,
+            "FACE_IMAGE_TOO_LARGE",
+            f"이미지는 {MAX_FACE_IMAGE_BYTES // (1024 * 1024)}MB 이하여야 합니다",
+            None,
+        )
+
+    try:
+        result = processor(
+            image_bytes,
+            image.content_type or "application/octet-stream",
+        )
+        return Response(
+            content=result.image_bytes,
+            media_type=result.content_type,
+            headers={
+                "Content-Disposition": 'attachment; filename="face-mosaic.jpg"',
+                "X-Face-Count": str(result.face_count),
+                "X-Image-Width": str(result.width),
+                "X-Image-Height": str(result.height),
+            },
+        )
+    except FaceMosaicError as exc:
+        return _error_response(
+            exc.status_code,
+            exc.error_code,
+            str(exc),
+            None,
+        )
+    except Exception:
+        logger.exception("Unexpected local face mosaic failure")
+        return _error_response(
+            500,
+            "INTERNAL_SERVER_ERROR",
+            "얼굴 모자이크 처리 중 오류가 발생했습니다",
+            None,
         )
