@@ -27,6 +27,7 @@ class KoreanOpenApiTest(unittest.TestCase):
                 "post",
             ): "다음 이동 장소 추천",
             ("/api/v1/receipts/analyze", "post"): "영수증 OCR 분석",
+            ("/ocr", "post"): "S3 영수증 OCR 분석(Spring 연동용)",
             (
                 "/api/v1/receipts/analyze-gpt-mini",
                 "post",

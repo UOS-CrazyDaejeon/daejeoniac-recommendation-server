@@ -28,6 +28,11 @@ from recommendation_api.receipt_gpt import (
     ReceiptVisionUpstreamError,
     analyze_receipt_image_with_gpt,
 )
+from recommendation_api.receipt_callback import (
+    ReceiptOcrCallbackError,
+    build_ocr_result_callback_payload,
+    post_ocr_result_callback,
+)
 from recommendation_api.receipt_ocr import (
     ReceiptDocumentError,
     analyze_receipt_image_bytes,
@@ -43,6 +48,8 @@ from recommendation_api.schemas import (
     NextPlacesRequest,
     NextPlacesResponse,
     ReceiptAnalysisResponse,
+    ReceiptOcrRequest,
+    ReceiptOcrResponse,
     RecommendationRequest,
     RecommendationResponse,
     SimilarPlacesRequest,
@@ -58,6 +65,7 @@ GptReceiptProcessor = Callable[[bytes, str], dict[str, Any]]
 S3ImageLoader = Callable[[str], S3ReceiptObject]
 FaceMosaicProcessor = Callable[[bytes, str], FaceMosaicResult]
 S3MosaicUploader = Callable[[FaceMosaicResult], str]
+ReceiptOcrResultCallback = Callable[[dict[str, str | None]], None]
 logger = logging.getLogger(__name__)
 
 MAX_RECEIPT_IMAGE_BYTES = int(
@@ -122,6 +130,11 @@ S3_IMAGE_ERROR_RESPONSES = {
     502: {"description": "S3 읽기 또는 저장 실패"},
     503: {"description": "S3 또는 얼굴 검출 설정 누락"},
 }
+SPRING_OCR_CALLBACK_ERROR_RESPONSES = {
+    **S3_IMAGE_ERROR_RESPONSES,
+    502: {"description": "S3 읽기 또는 Spring OCR 결과 콜백 실패"},
+    503: {"description": "S3 또는 Spring OCR 결과 콜백 설정 누락"},
+}
 LOCAL_FACE_ERROR_RESPONSES = {
     413: {"description": "이미지 용량 제한 초과"},
     415: {"description": "지원하지 않는 파일 형식"},
@@ -151,7 +164,11 @@ def _error_response(
 def _request_id_from_body(body: Any) -> str | None:
     if not isinstance(body, dict):
         return None
-    request_id = body.get("request_id")
+    request_id = (
+        body.get("request_id")
+        or body.get("requestId")
+        or body.get("receiptUuid")
+    )
     return str(request_id) if request_id is not None else None
 
 
@@ -233,6 +250,10 @@ def get_face_mosaic_processor() -> FaceMosaicProcessor:
 
 def get_s3_mosaic_uploader() -> S3MosaicUploader:
     return lambda result: store_s3_mosaic_image(result)
+
+
+def get_ocr_result_callback() -> ReceiptOcrResultCallback:
+    return post_ocr_result_callback
 
 
 @app.post(
@@ -561,6 +582,77 @@ def _completed_gpt_receipt_response(
         "processingTimeMs": analysis["processingTimeMs"],
         "usage": analysis.get("usage"),
     }
+
+
+@app.post(
+    "/ocr",
+    response_model=ReceiptOcrResponse,
+    tags=["영수증 분석"],
+    summary="S3 영수증 OCR 분석(Spring 연동용)",
+    description=(
+        "Spring이 receiptUuid와 S3 objectKey를 JSON으로 전달하면, 서버가 "
+        "설정된 S3 버킷에서 이미지를 읽어 OCR 분석한 뒤, 설정된 Spring 결과 "
+        "콜백 URL(/api/v1/receipts/ocr-result)로 결과를 전송합니다."
+    ),
+    response_description="Spring 콜백 전송 후 receiptUuid에 대응하는 OCR 분석 결과",
+    responses=SPRING_OCR_CALLBACK_ERROR_RESPONSES,
+)
+def analyze_receipt_from_spring_ocr_request(
+    request: ReceiptOcrRequest,
+    loader: S3ImageLoader = Depends(get_s3_receipt_loader),
+    processor: ReceiptProcessor = Depends(get_receipt_processor),
+    callback: ReceiptOcrResultCallback = Depends(get_ocr_result_callback),
+) -> dict[str, Any] | JSONResponse:
+    try:
+        source = loader(request.objectKey)
+        analysis = processor(source.image_bytes, OCR_LANGUAGE)
+        result = analysis["result"]
+        callback(build_ocr_result_callback_payload(request.receiptUuid, result))
+        return {
+            "receiptUuid": request.receiptUuid,
+            "status": "COMPLETED",
+            "result": result,
+            "warnings": result.get("warnings", []),
+            "processedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "rawOcrCharCount": len(analysis.get("rawOcrText", "")),
+        }
+    except S3ReceiptError as exc:
+        return _error_response(
+            exc.status_code,
+            exc.error_code,
+            str(exc),
+            request.receiptUuid,
+        )
+    except ReceiptDocumentError as exc:
+        return _error_response(
+            422,
+            "RECEIPT_ANALYSIS_FAILED",
+            str(exc),
+            request.receiptUuid,
+        )
+    except ReceiptOcrCallbackError as exc:
+        logger.warning(
+            "Spring OCR callback failure receipt_uuid=%s: %s",
+            request.receiptUuid,
+            exc,
+        )
+        return _error_response(
+            exc.status_code,
+            exc.error_code,
+            str(exc),
+            request.receiptUuid,
+        )
+    except Exception:
+        logger.exception(
+            "Unexpected Spring OCR failure receipt_uuid=%s",
+            request.receiptUuid,
+        )
+        return _error_response(
+            500,
+            "INTERNAL_SERVER_ERROR",
+            "S3 영수증 처리 중 오류가 발생했습니다",
+            request.receiptUuid,
+        )
 
 
 @app.post(

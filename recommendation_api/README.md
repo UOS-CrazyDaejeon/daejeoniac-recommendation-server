@@ -274,10 +274,46 @@ Spring은 이미지 파일이나 S3 URL 전체를 보내지 않고 버킷 내부
 
 | 분석 방식 | 엔드포인트 |
 | --- | --- |
+| Spring OCR 연동 | `POST /ocr` |
 | Tesseract OCR | `POST /api/v1/receipts/analyze-from-s3` |
 | GPT-5 Mini | `POST /api/v1/receipts/analyze-gpt-mini-from-s3` |
 
 두 API의 JSON 요청 형식은 같다.
+
+Spring이 사용하는 기본 OCR 연동은 `POST /ocr`이다. 이미지 파일이나 S3 URL이
+아닌 영수증 UUID와 버킷 내부 객체 키만 전달한다.
+
+```json
+{
+  "receiptUuid": "2d6ae292-3e3b-4c95-a102-779562ee12bc",
+  "objectKey": "receipts/2026/08/receipt-001.heic"
+}
+```
+
+OCR이 끝나면 Python 서버는 `SPRING_OCR_CALLBACK_URL`에 설정한 Spring의
+`POST /api/v1/receipts/ocr-result`로 아래 결과를 먼저 전송한다. 이 콜백이
+2xx가 아닌 경우 `/ocr`도 `502 OCR_RESULT_CALLBACK_FAILED`로 실패 처리한다.
+
+```json
+{
+  "receiptUuid": "2d6ae292-3e3b-4c95-a102-779562ee12bc",
+  "ocrStatus": "COMPLETED",
+  "ocrPlaceName": "카페 파도",
+  "ocrPlaceAddress": "대전광역시 유성구 대학로 291",
+  "ocrPaidAt": "2026-08-23T14:32:00"
+}
+```
+
+`ocrPaidAt`은 `LocalDateTime` 형식이며, 결제 날짜 또는 시간을 OCR로 판독하지
+못하면 `null`이다. `ocrStatus`는 기본값이 `COMPLETED`이며 Spring의 상태값에
+맞춰 환경변수로 변경할 수 있다.
+
+`/ocr` 호출 응답에도 전체 OCR 결과를 반환하지만, Spring DB 반영 기준은 위
+콜백이다.
+
+배포 서버가 `http://3.39.230.42`라면 Spring의 호출 주소는
+`http://3.39.230.42/ocr`이다. 운영 환경에서는 이 서버를 Spring 서버만 접근할
+수 있는 보안 그룹 또는 내부 네트워크로 제한한다.
 
 ```json
 {
@@ -293,6 +329,12 @@ S3 설정은 `recommendation_api/.env`에 넣는다. 아래 점(`.`) 형식과 A
 `AWS_S3_BUCKET`)를 모두 지원한다.
 
 ```dotenv
+SPRING_OCR_CALLBACK_URL=http://spring-server:8080/api/v1/receipts/ocr-result
+SPRING_OCR_CALLBACK_TIMEOUT_SECONDS=5
+SPRING_OCR_SUCCESS_STATUS=COMPLETED
+# Spring 내부 인증이 필요한 경우에만 설정한다.
+SPRING_OCR_CALLBACK_AUTHORIZATION=
+
 aws.region=ap-northeast-2
 aws.access-key=
 aws.secret-key=

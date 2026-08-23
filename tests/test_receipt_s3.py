@@ -9,8 +9,14 @@ from botocore.exceptions import ClientError
 from recommendation_api.main import (
     app,
     get_gpt_receipt_processor,
+    get_ocr_result_callback,
     get_receipt_processor,
     get_s3_receipt_loader,
+)
+from recommendation_api.receipt_callback import (
+    ReceiptOcrCallbackError,
+    build_ocr_result_callback_payload,
+    post_ocr_result_callback,
 )
 from recommendation_api.receipt_s3 import (
     S3ReceiptKeyError,
@@ -52,6 +58,23 @@ class FailingS3Client:
     def get_object(self, **kwargs):
         del kwargs
         raise self.error
+
+
+class RecordingCallbackClient:
+    def __init__(self):
+        self.calls = []
+
+    def post(self, url, *, json, headers):
+        self.calls.append({"url": url, "json": json, "headers": headers})
+        return self
+
+    def raise_for_status(self):
+        return None
+
+
+class FailingCallbackClient(RecordingCallbackClient):
+    def raise_for_status(self):
+        raise RuntimeError("Spring callback failed")
 
 
 def settings(prefix: str | None = "receipts/") -> S3ReceiptSettings:
@@ -189,6 +212,64 @@ class S3ReceiptLoaderTest(unittest.TestCase):
             )
 
 
+class OcrResultCallbackTest(unittest.TestCase):
+    def test_builds_spring_ocr_result_contract(self):
+        payload = build_ocr_result_callback_payload(
+            "receipt-uuid-001",
+            {
+                "merchantName": "카페 파도",
+                "address": "대전광역시 유성구 대학로 291",
+                "transactionDate": "2026-08-23",
+                "transactionTime": "14:32",
+            },
+        )
+
+        self.assertEqual(
+            payload,
+            {
+                "receiptUuid": "receipt-uuid-001",
+                "ocrStatus": "COMPLETED",
+                "ocrPlaceName": "카페 파도",
+                "ocrPlaceAddress": "대전광역시 유성구 대학로 291",
+                "ocrPaidAt": "2026-08-23T14:32:00",
+            },
+        )
+
+    def test_posts_callback_to_configured_spring_endpoint(self):
+        client = RecordingCallbackClient()
+        payload = {"receiptUuid": "receipt-uuid-001", "ocrStatus": "COMPLETED"}
+        environment = {
+            "SPRING_OCR_CALLBACK_URL": "http://spring-api:8080/api/v1/receipts/ocr-result",
+            "SPRING_OCR_CALLBACK_AUTHORIZATION": "Bearer internal-token",
+        }
+
+        with mock.patch.dict(os.environ, environment, clear=True):
+            post_ocr_result_callback(payload, client=client)
+
+        self.assertEqual(
+            client.calls,
+            [
+                {
+                    "url": "http://spring-api:8080/api/v1/receipts/ocr-result",
+                    "json": payload,
+                    "headers": {
+                        "Content-Type": "application/json",
+                        "Authorization": "Bearer internal-token",
+                    },
+                }
+            ],
+        )
+
+    def test_raises_safe_error_when_spring_callback_fails(self):
+        with mock.patch.dict(
+            os.environ,
+            {"SPRING_OCR_CALLBACK_URL": "http://spring-api:8080/api/v1/receipts/ocr-result"},
+            clear=True,
+        ):
+            with self.assertRaises(ReceiptOcrCallbackError):
+                post_ocr_result_callback({}, client=FailingCallbackClient())
+
+
 class S3ReceiptApiTest(unittest.TestCase):
     def tearDown(self):
         app.dependency_overrides.clear()
@@ -220,6 +301,74 @@ class S3ReceiptApiTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["result"]["totalAmount"], 8000)
         self.assertEqual(response.json()["requestId"], "req-s3-001")
+
+    def test_analyzes_s3_receipt_with_spring_ocr_contract(self):
+        def loader(object_key: str):
+            self.assertEqual(object_key, "receipts/receipt-001.heic")
+            return S3ReceiptObject(object_key, "image/heic", b"image-bytes")
+
+        def processor(image_bytes: bytes, language: str):
+            self.assertEqual(image_bytes, b"image-bytes")
+            self.assertEqual(language, "kor+eng")
+            return {"result": receipt_result(), "rawOcrText": "합계 8,000원"}
+
+        app.dependency_overrides[get_s3_receipt_loader] = lambda: loader
+        app.dependency_overrides[get_receipt_processor] = lambda: processor
+        callback_payloads = []
+        app.dependency_overrides[get_ocr_result_callback] = lambda: callback_payloads.append
+
+        with TestClient(app) as client:
+            response = client.post(
+                "/ocr",
+                json={
+                    "receiptUuid": "receipt-uuid-001",
+                    "objectKey": "receipts/receipt-001.heic",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["receiptUuid"], "receipt-uuid-001")
+        self.assertEqual(response.json()["result"]["totalAmount"], 8000)
+        self.assertEqual(
+            callback_payloads[0]["ocrPaidAt"],
+            "2026-08-01T14:32:00",
+        )
+
+    def test_returns_502_when_spring_ocr_callback_fails(self):
+        app.dependency_overrides[get_s3_receipt_loader] = lambda: (
+            lambda object_key: S3ReceiptObject(object_key, "image/jpeg", b"image-bytes")
+        )
+        app.dependency_overrides[get_receipt_processor] = lambda: (
+            lambda image_bytes, language: {
+                "result": receipt_result(),
+                "rawOcrText": "합계 8,000원",
+            }
+        )
+
+        def fail_callback(payload):
+            del payload
+            raise ReceiptOcrCallbackError("Spring OCR 결과 콜백 요청에 실패했습니다.")
+
+        app.dependency_overrides[get_ocr_result_callback] = lambda: fail_callback
+
+        with TestClient(app) as client:
+            response = client.post(
+                "/ocr",
+                json={
+                    "receiptUuid": "receipt-uuid-callback-failure",
+                    "objectKey": "receipts/receipt-001.jpg",
+                },
+            )
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(
+            response.json()["error"]["code"],
+            "OCR_RESULT_CALLBACK_FAILED",
+        )
+        self.assertEqual(
+            response.json()["error"]["request_id"],
+            "receipt-uuid-callback-failure",
+        )
 
     def test_analyzes_s3_receipt_with_gpt_mini(self):
         def loader(s3_key: str):

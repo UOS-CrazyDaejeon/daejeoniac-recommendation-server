@@ -161,6 +161,34 @@ class S3ReceiptAnalysisRequest(BaseModel):
     )
 
 
+class ReceiptOcrRequest(BaseModel):
+    """Spring이 영수증 식별자와 S3 객체 키만 전달할 때 사용하는 요청."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    receiptUuid: str = Field(
+        min_length=1,
+        max_length=128,
+        description="Spring에서 발급한 영수증 식별 UUID",
+        examples=["2d6ae292-3e3b-4c95-a102-779562ee12bc"],
+    )
+    objectKey: str = Field(
+        min_length=1,
+        max_length=1024,
+        description="설정된 S3 버킷 안의 영수증 이미지 객체 키",
+        examples=["receipts/2026/08/receipt-001.heic"],
+    )
+
+
+class ReceiptOcrResponse(BaseModel):
+    receiptUuid: str
+    status: Literal["COMPLETED"] = "COMPLETED"
+    result: ReceiptResult
+    warnings: list[str] = Field(default_factory=list)
+    processedAt: str
+    rawOcrCharCount: int = Field(ge=0)
+
+
 class S3FaceMosaicRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
