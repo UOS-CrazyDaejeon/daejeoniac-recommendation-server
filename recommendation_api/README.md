@@ -7,16 +7,6 @@ Spring이 MySQL에서 조회한 장소 후보와 최근 선택 이력을 받아 
 
 ## API
 
-### 상태 확인
-
-```http
-GET /health
-```
-
-```json
-{"status": "ok"}
-```
-
 ### 추천 API 구분
 
 | 목적 | 엔드포인트 | 실제 계산 결과 |
@@ -503,12 +493,6 @@ public Mono<FaceMosaicResponse> mosaicFaces(String s3Key, Long userId) {
 .venv/bin/uvicorn recommendation_api.main:app --host 127.0.0.1 --port 8000
 ```
 
-다른 터미널에서 확인한다.
-
-```bash
-curl --fail http://127.0.0.1:8000/health
-```
-
 OpenAI를 사용할 때만 `OPENAI_API_KEY`를 설정한다. 키가 없으면 기존
 추천 코드의 fallback scorer가 사용되지만 GPT 영수증 엔드포인트는 `503`을
 반환한다. `RECEIPT_VISION_MODEL`의 기본값은 `gpt-5-mini`, 이미지 세부 수준인
@@ -524,7 +508,6 @@ OpenAI를 사용할 때만 `OPENAI_API_KEY`를 설정한다. 키가 없으면 �
 cp recommendation_api/.env.example recommendation_api/.env
 chmod 600 recommendation_api/.env
 docker compose -f recommendation_api/deploy/docker-compose.yml up -d --build
-curl --fail http://127.0.0.1:8000/health
 ```
 
 `.env`의 `OPENAI_API_KEY` 값은 이미지에 포함되지 않는다. API 문서는
@@ -747,7 +730,6 @@ cp recommendation_api/.env.example recommendation_api/.env
 chmod 600 recommendation_api/.env
 docker compose -f recommendation_api/deploy/docker-compose.yml up -d --build
 docker compose -f recommendation_api/deploy/docker-compose.yml ps
-curl --fail http://127.0.0.1:8000/health
 ```
 
 `recommendation_api/.env`에는 EC2에서만 실제 `OPENAI_API_KEY`를 넣는다.
@@ -760,13 +742,6 @@ sudo ln -sfn /etc/nginx/sites-available/recommendation-api /etc/nginx/sites-enab
 sudo rm -f /etc/nginx/sites-enabled/default
 sudo nginx -t
 sudo systemctl reload nginx
-curl --fail http://127.0.0.1/health
-```
-
-Spring EC2에서는 Python EC2의 사설 IP로 확인한다.
-
-```bash
-curl --fail http://10.0.2.15/health
 ```
 
 이 저장소만으로 실제 AWS 배포를 수행할 수는 없다. Python EC2 주소,
@@ -777,7 +752,6 @@ SSH 키 또는 SSM 권한, VPC와 보안 그룹 ID, AWS 권한이 준비되어�
 ```bash
 docker compose -f recommendation_api/deploy/docker-compose.yml ps
 docker compose -f recommendation_api/deploy/docker-compose.yml logs -f --tail=200 recommendation-api
-curl --fail http://127.0.0.1/health
 ```
 
 로컬 빌드 방식의 업데이트는 다음과 같다.
@@ -785,7 +759,6 @@ curl --fail http://127.0.0.1/health
 ```bash
 docker compose -f recommendation_api/deploy/docker-compose.yml build --pull
 docker compose -f recommendation_api/deploy/docker-compose.yml up -d
-curl --fail http://127.0.0.1/health
 ```
 
 롤백할 때는 `.env`의 `RECOMMENDATION_IMAGE`를 이전 이미지 태그로 바꾸고
@@ -793,7 +766,6 @@ curl --fail http://127.0.0.1/health
 
 ```bash
 docker compose -f recommendation_api/deploy/docker-compose.yml up -d
-curl --fail http://127.0.0.1/health
 ```
 
 ## 향후 ECR CI/CD
@@ -805,7 +777,7 @@ CI/CD는 다음 순서로 추가하면 된다.
 3. Git commit SHA를 이미지 태그로 사용해 ECR에 push한다.
 4. EC2의 `RECOMMENDATION_IMAGE`를 새 SHA 태그로 변경한다.
 5. EC2에서 `docker compose pull`과 `docker compose up -d`를 실행한다.
-6. `/health`가 성공할 때까지 제한 시간 동안 확인한다.
+6. 컨테이너 로그와 서비스 상태를 확인한다.
 7. 실패하면 직전 SHA 태그로 복구한다.
 
 ECR 로그인 형식은 다음과 같다.

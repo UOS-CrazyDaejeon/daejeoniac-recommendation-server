@@ -93,10 +93,6 @@ app = FastAPI(
     version="1.5.0",
     openapi_tags=[
         {
-            "name": "운영",
-            "description": "서버 실행 상태를 확인하는 운영용 API입니다.",
-        },
-        {
             "name": "장소 추천",
             "description": "선택 장소와 비슷한 장소 또는 다음 이동 장소를 추천합니다.",
         },
@@ -200,17 +196,6 @@ def handle_request_validation_error(
         message="요청 본문이 올바르지 않습니다",
         request_id=_request_id_from_body(exc.body),
     )
-
-
-@app.get(
-    "/health",
-    tags=["운영"],
-    summary="서버 상태 확인",
-    description="API 서버가 정상적으로 요청을 받을 수 있는지 확인합니다.",
-    response_description="서버 상태",
-)
-def health() -> dict[str, str]:
-    return {"status": "ok"}
 
 
 def get_recommendation_processor() -> RecommendationProcessor:

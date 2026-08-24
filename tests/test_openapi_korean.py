@@ -12,11 +12,10 @@ class KoreanOpenApiTest(unittest.TestCase):
         self.assertIn("내부 API", spec["info"]["description"])
         self.assertEqual(
             [tag["name"] for tag in spec["tags"]],
-            ["운영", "장소 추천", "영수증 분석", "이미지 비식별화"],
+            ["장소 추천", "영수증 분석", "이미지 비식별화"],
         )
 
         expected_summaries = {
-            ("/health", "get"): "서버 상태 확인",
             ("/api/v1/recommendations", "post"): "통합 장소 추천(기존 API)",
             (
                 "/api/v1/recommendations/similar-places",
