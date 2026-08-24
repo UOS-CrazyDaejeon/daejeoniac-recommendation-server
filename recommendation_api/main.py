@@ -4,7 +4,7 @@ import logging
 import os
 from typing import Any
 
-from fastapi import Depends, FastAPI, File, Form, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 
@@ -39,7 +39,9 @@ from recommendation_api.receipt_ocr import (
 )
 from recommendation_api.receipt_s3 import (
     S3ReceiptError,
+    S3ReceiptObjectList,
     S3ReceiptObject,
+    list_s3_receipt_objects,
     load_s3_receipt_object,
 )
 from recommendation_api.schemas import (
@@ -56,6 +58,7 @@ from recommendation_api.schemas import (
     SimilarPlacesResponse,
     S3FaceMosaicRequest,
     S3ReceiptAnalysisRequest,
+    S3ReceiptObjectListResponse,
     S3ReceiptReadCheckRequest,
     S3ReceiptReadCheckResponse,
 )
@@ -65,6 +68,7 @@ RecommendationProcessor = Callable[[dict[str, Any]], dict[str, Any]]
 ReceiptProcessor = Callable[[bytes, str], dict[str, Any]]
 GptReceiptProcessor = Callable[[bytes, str], dict[str, Any]]
 S3ImageLoader = Callable[[str], S3ReceiptObject]
+S3ReceiptObjectLister = Callable[[int], S3ReceiptObjectList]
 FaceMosaicProcessor = Callable[[bytes, str], FaceMosaicResult]
 S3MosaicUploader = Callable[[FaceMosaicResult], str]
 ReceiptOcrResultCallback = Callable[[dict[str, str | None]], None]
@@ -237,6 +241,10 @@ def get_s3_receipt_loader() -> S3ImageLoader:
         s3_key,
         max_bytes=MAX_RECEIPT_IMAGE_BYTES,
     )
+
+
+def get_s3_receipt_object_lister() -> S3ReceiptObjectLister:
+    return lambda max_keys: list_s3_receipt_objects(max_keys=max_keys)
 
 
 def get_s3_face_image_loader() -> S3ImageLoader:
@@ -707,6 +715,51 @@ def check_s3_receipt_read_access(
             str(exc),
             request.requestId,
         )
+
+
+@app.get(
+    "/api/v1/receipts/s3-objects",
+    response_model=S3ReceiptObjectListResponse,
+    tags=["영수증 분석"],
+    summary="S3 영수증 객체 목록 조회",
+    description=(
+        "설정된 영수증 S3 경로(기본값: receipts/)에서 객체 메타데이터만 "
+        "최대 50개까지 조회합니다. 이미지 원본은 반환하지 않습니다."
+    ),
+    response_description="S3 영수증 객체 목록",
+    responses=S3_IMAGE_ERROR_RESPONSES,
+)
+def list_s3_receipt_objects_for_check(
+    maxKeys: int = Query(
+        default=20,
+        ge=1,
+        le=50,
+        description="반환할 최대 객체 수(1~50)",
+    ),
+    lister: S3ReceiptObjectLister = Depends(get_s3_receipt_object_lister),
+) -> dict[str, Any] | JSONResponse:
+    try:
+        result = lister(maxKeys)
+        return {
+            "status": "AVAILABLE",
+            "prefix": result.prefix,
+            "objectCount": len(result.objects),
+            "objects": [
+                {
+                    "objectKey": item.key,
+                    "sizeBytes": item.size_bytes,
+                    "lastModified": (
+                        item.last_modified.isoformat()
+                        if item.last_modified is not None
+                        else None
+                    ),
+                }
+                for item in result.objects
+            ],
+        }
+    except S3ReceiptError as exc:
+        logger.warning("S3 receipt list failure code=%s: %s", exc.error_code, exc)
+        return _error_response(exc.status_code, exc.error_code, str(exc), None)
 
 
 @app.post(

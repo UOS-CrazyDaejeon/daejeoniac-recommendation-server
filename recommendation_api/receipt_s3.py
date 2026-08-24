@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from functools import lru_cache
 import os
 from typing import Any
@@ -116,6 +117,19 @@ class S3ReceiptObject:
     image_bytes: bytes
 
 
+@dataclass(frozen=True)
+class S3ReceiptObjectSummary:
+    key: str
+    size_bytes: int
+    last_modified: datetime | None
+
+
+@dataclass(frozen=True)
+class S3ReceiptObjectList:
+    prefix: str
+    objects: list[S3ReceiptObjectSummary]
+
+
 def _validate_object_key(key: str, allowed_prefix: str | None) -> str:
     normalized = key.strip()
     if not normalized:
@@ -139,6 +153,12 @@ def _validate_object_key(key: str, allowed_prefix: str | None) -> str:
     return normalized.lstrip("/")
 
 
+def _receipt_list_prefix(allowed_prefix: str | None) -> str:
+    """목록 조회는 기본적으로 receipts/ 경로 안으로 제한한다."""
+    selected_prefix = (allowed_prefix or "receipts/").strip().lstrip("/")
+    return selected_prefix.rstrip("/") + "/"
+
+
 @lru_cache(maxsize=1)
 def configured_s3_client() -> Any:
     settings = S3ReceiptSettings.from_environment()
@@ -160,6 +180,62 @@ def configured_s3_client() -> Any:
         if settings.session_token:
             arguments["aws_session_token"] = settings.session_token
     return boto3.client("s3", **arguments)
+
+
+def list_s3_receipt_objects(
+    *,
+    max_keys: int = 20,
+    client: Any | None = None,
+    settings: S3ReceiptSettings | None = None,
+) -> S3ReceiptObjectList:
+    """허용된 영수증 경로에서 객체 메타데이터만 제한적으로 조회한다."""
+    if not 1 <= max_keys <= 50:
+        raise ValueError("max_keys는 1~50 사이여야 합니다.")
+
+    selected_settings = settings or S3ReceiptSettings.from_environment()
+    prefix = _receipt_list_prefix(selected_settings.allowed_prefix)
+    list_arguments: dict[str, Any] = {
+        "Bucket": selected_settings.bucket,
+        "Prefix": prefix,
+        "MaxKeys": max_keys,
+    }
+    if selected_settings.expected_bucket_owner:
+        list_arguments["ExpectedBucketOwner"] = (
+            selected_settings.expected_bucket_owner
+        )
+
+    try:
+        response = (client or configured_s3_client()).list_objects_v2(**list_arguments)
+    except Exception as exc:
+        try:
+            from botocore.exceptions import NoCredentialsError
+        except ImportError as import_error:
+            raise S3ReceiptConfigurationError(
+                "S3 연동에 필요한 boto3 패키지가 설치되지 않았습니다."
+            ) from import_error
+
+        if isinstance(exc, NoCredentialsError):
+            raise S3ReceiptConfigurationError(
+                "S3 접근 자격 증명을 찾지 못했습니다."
+            ) from exc
+        raise S3ReceiptAccessError(
+            "S3 영수증 객체 목록을 가져오지 못했습니다."
+        ) from exc
+
+    objects: list[S3ReceiptObjectSummary] = []
+    for entry in response.get("Contents", []):
+        key = entry.get("Key")
+        if not isinstance(key, str) or not key:
+            continue
+        last_modified = entry.get("LastModified")
+        objects.append(
+            S3ReceiptObjectSummary(
+                key=key,
+                size_bytes=int(entry.get("Size", 0) or 0),
+                last_modified=last_modified if isinstance(last_modified, datetime) else None,
+            )
+        )
+    return S3ReceiptObjectList(prefix=prefix, objects=objects)
 
 
 def load_s3_receipt_object(

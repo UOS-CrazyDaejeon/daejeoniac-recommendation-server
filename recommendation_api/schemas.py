@@ -183,6 +183,19 @@ class S3ReceiptReadCheckResponse(BaseModel):
     sizeBytes: int = Field(gt=0)
 
 
+class S3ReceiptObjectMetadata(BaseModel):
+    objectKey: str
+    sizeBytes: int = Field(ge=0)
+    lastModified: str | None = None
+
+
+class S3ReceiptObjectListResponse(BaseModel):
+    status: Literal["AVAILABLE"] = "AVAILABLE"
+    prefix: str
+    objectCount: int = Field(ge=0, le=50)
+    objects: list[S3ReceiptObjectMetadata] = Field(default_factory=list)
+
+
 class ReceiptOcrRequest(BaseModel):
     """Spring이 영수증 식별자와 S3 객체 키만 전달할 때 사용하는 요청."""
 

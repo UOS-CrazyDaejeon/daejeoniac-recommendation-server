@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from io import BytesIO
 import os
 from unittest import mock
@@ -11,6 +12,7 @@ from recommendation_api.main import (
     get_gpt_receipt_processor,
     get_ocr_result_callback,
     get_receipt_processor,
+    get_s3_receipt_object_lister,
     get_s3_receipt_loader,
 )
 from recommendation_api.receipt_callback import (
@@ -22,9 +24,12 @@ from recommendation_api.receipt_s3 import (
     S3ReceiptKeyError,
     S3ReceiptNotFoundError,
     S3ReceiptObject,
+    S3ReceiptObjectList,
+    S3ReceiptObjectSummary,
     S3ReceiptSettings,
     S3ReceiptTooLargeError,
     load_s3_receipt_object,
+    list_s3_receipt_objects,
 )
 
 
@@ -58,6 +63,16 @@ class FailingS3Client:
     def get_object(self, **kwargs):
         del kwargs
         raise self.error
+
+
+class ListingS3Client:
+    def __init__(self, response: dict):
+        self.response = response
+        self.calls = []
+
+    def list_objects_v2(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.response
 
 
 class RecordingCallbackClient:
@@ -211,6 +226,40 @@ class S3ReceiptLoaderTest(unittest.TestCase):
                 settings=settings(),
             )
 
+    def test_lists_only_receipt_prefix_metadata(self):
+        client = ListingS3Client(
+            {
+                "Contents": [
+                    {
+                        "Key": "receipts/2026/08/receipt-001.heic",
+                        "Size": 1234,
+                        "LastModified": datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc),
+                    }
+                ]
+            }
+        )
+
+        result = list_s3_receipt_objects(
+            max_keys=20,
+            client=client,
+            settings=settings(),
+        )
+
+        self.assertEqual(result.prefix, "receipts/")
+        self.assertEqual(result.objects[0].key, "receipts/2026/08/receipt-001.heic")
+        self.assertEqual(result.objects[0].size_bytes, 1234)
+        self.assertEqual(
+            client.calls,
+            [
+                {
+                    "Bucket": "receipt-test-bucket",
+                    "Prefix": "receipts/",
+                    "MaxKeys": 20,
+                    "ExpectedBucketOwner": "521701612202",
+                }
+            ],
+        )
+
 
 class OcrResultCallbackTest(unittest.TestCase):
     def test_builds_spring_ocr_result_contract(self):
@@ -328,6 +377,33 @@ class S3ReceiptApiTest(unittest.TestCase):
                 "contentType": "image/heic",
                 "sizeBytes": len(b"image-bytes"),
             },
+        )
+
+    def test_lists_s3_receipt_metadata(self):
+        result = S3ReceiptObjectList(
+            prefix="receipts/",
+            objects=[
+                S3ReceiptObjectSummary(
+                    key="receipts/2026/08/receipt-001.heic",
+                    size_bytes=1234,
+                    last_modified=datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc),
+                )
+            ],
+        )
+        app.dependency_overrides[get_s3_receipt_object_lister] = lambda: (
+            lambda max_keys: result
+        )
+
+        with TestClient(app) as client:
+            response = client.get("/api/v1/receipts/s3-objects?maxKeys=20")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "AVAILABLE")
+        self.assertEqual(response.json()["prefix"], "receipts/")
+        self.assertEqual(response.json()["objectCount"], 1)
+        self.assertEqual(
+            response.json()["objects"][0]["objectKey"],
+            "receipts/2026/08/receipt-001.heic",
         )
 
     def test_returns_s3_error_from_read_check(self):

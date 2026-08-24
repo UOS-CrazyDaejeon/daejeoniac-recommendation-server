@@ -618,6 +618,13 @@ curl -X POST http://127.0.0.1:8000/api/v1/receipts/s3-read-check \
 `502 S3_RECEIPT_ACCESS_FAILED`가 발생하면 IAM/S3 권한을, `404`가 발생하면
 `objectKey`를 확인한다.
 
+영수증 경로의 객체 목록(기본 최대 20개, 최대 50개)을 확인하려면 아래 API를
+호출한다. 이 API에는 `s3:ListBucket` 권한이 필요하며 이미지 원본은 반환하지 않는다.
+
+```bash
+curl 'http://127.0.0.1:8000/api/v1/receipts/s3-objects?maxKeys=20'
+```
+
 ```java
 public record S3ReceiptAnalysisRequest(
         String requestId,
