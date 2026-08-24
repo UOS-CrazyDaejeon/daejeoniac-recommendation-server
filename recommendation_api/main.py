@@ -602,7 +602,18 @@ def analyze_receipt_from_spring_ocr_request(
         source = loader(request.objectKey)
         analysis = processor(source.image_bytes, OCR_LANGUAGE)
         result = analysis["result"]
-        callback(build_ocr_result_callback_payload(request.receiptUuid, result))
+        callback_payload = build_ocr_result_callback_payload(request.receiptUuid, result)
+        logger.info(
+            "OCR analysis completed receipt_uuid=%s result=%s",
+            request.receiptUuid,
+            result,
+        )
+        logger.info(
+            "Sending Spring OCR callback receipt_uuid=%s payload=%s",
+            request.receiptUuid,
+            callback_payload,
+        )
+        callback(callback_payload)
         return {
             "receiptUuid": request.receiptUuid,
             "status": "COMPLETED",
