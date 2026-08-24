@@ -56,6 +56,8 @@ from recommendation_api.schemas import (
     SimilarPlacesResponse,
     S3FaceMosaicRequest,
     S3ReceiptAnalysisRequest,
+    S3ReceiptReadCheckRequest,
+    S3ReceiptReadCheckResponse,
 )
 
 
@@ -663,6 +665,47 @@ def analyze_receipt_from_spring_ocr_request(
             "INTERNAL_SERVER_ERROR",
             "S3 영수증 처리 중 오류가 발생했습니다",
             request.receiptUuid,
+        )
+
+
+@app.post(
+    "/api/v1/receipts/s3-read-check",
+    response_model=S3ReceiptReadCheckResponse,
+    tags=["영수증 분석"],
+    summary="S3 영수증 객체 읽기 확인",
+    description=(
+        "OCR을 수행하지 않고, 전달한 objectKey의 영수증 이미지 객체를 "
+        "설정된 S3 버킷에서 실제로 읽을 수 있는지 확인합니다. "
+        "이미지 원본은 응답에 포함하지 않습니다."
+    ),
+    response_description="S3에서 읽은 영수증 이미지 객체의 메타데이터",
+    responses=S3_IMAGE_ERROR_RESPONSES,
+)
+def check_s3_receipt_read_access(
+    request: S3ReceiptReadCheckRequest,
+    loader: S3ImageLoader = Depends(get_s3_receipt_loader),
+) -> dict[str, Any] | JSONResponse:
+    try:
+        source = loader(request.objectKey)
+        return {
+            "requestId": request.requestId,
+            "status": "AVAILABLE",
+            "objectKey": source.key,
+            "contentType": source.content_type,
+            "sizeBytes": len(source.image_bytes),
+        }
+    except S3ReceiptError as exc:
+        logger.warning(
+            "S3 receipt read check failure request_id=%s code=%s: %s",
+            request.requestId,
+            exc.error_code,
+            exc,
+        )
+        return _error_response(
+            exc.status_code,
+            exc.error_code,
+            str(exc),
+            request.requestId,
         )
 
 

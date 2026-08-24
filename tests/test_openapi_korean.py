@@ -37,6 +37,10 @@ class KoreanOpenApiTest(unittest.TestCase):
                 "post",
             ): "S3 영수증 OCR 분석",
             (
+                "/api/v1/receipts/s3-read-check",
+                "post",
+            ): "S3 영수증 객체 읽기 확인",
+            (
                 "/api/v1/receipts/analyze-gpt-mini-from-s3",
                 "post",
             ): "S3 영수증 GPT-5 Mini 분석",

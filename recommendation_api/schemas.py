@@ -161,6 +161,28 @@ class S3ReceiptAnalysisRequest(BaseModel):
     )
 
 
+class S3ReceiptReadCheckRequest(BaseModel):
+    """OCR 수행 없이 S3 영수증 객체를 읽을 수 있는지 확인하는 요청."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    requestId: str | None = Field(default=None, description="요청 추적 ID")
+    objectKey: str = Field(
+        min_length=1,
+        max_length=1024,
+        description="읽기 여부를 확인할 S3 영수증 이미지 객체 키",
+        examples=["receipts/2026/08/receipt-001.heic"],
+    )
+
+
+class S3ReceiptReadCheckResponse(BaseModel):
+    requestId: str | None = None
+    status: Literal["AVAILABLE"] = "AVAILABLE"
+    objectKey: str
+    contentType: str
+    sizeBytes: int = Field(gt=0)
+
+
 class ReceiptOcrRequest(BaseModel):
     """Spring이 영수증 식별자와 S3 객체 키만 전달할 때 사용하는 요청."""
 

@@ -302,6 +302,59 @@ class S3ReceiptApiTest(unittest.TestCase):
         self.assertEqual(response.json()["result"]["totalAmount"], 8000)
         self.assertEqual(response.json()["requestId"], "req-s3-001")
 
+    def test_reads_s3_receipt_without_running_ocr(self):
+        def loader(object_key: str):
+            self.assertEqual(object_key, "receipts/2026/08/receipt-001.heic")
+            return S3ReceiptObject(object_key, "image/heic", b"image-bytes")
+
+        app.dependency_overrides[get_s3_receipt_loader] = lambda: loader
+
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/v1/receipts/s3-read-check",
+                json={
+                    "requestId": "req-s3-read-check-001",
+                    "objectKey": "receipts/2026/08/receipt-001.heic",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {
+                "requestId": "req-s3-read-check-001",
+                "status": "AVAILABLE",
+                "objectKey": "receipts/2026/08/receipt-001.heic",
+                "contentType": "image/heic",
+                "sizeBytes": len(b"image-bytes"),
+            },
+        )
+
+    def test_returns_s3_error_from_read_check(self):
+        def loader(object_key: str):
+            del object_key
+            raise S3ReceiptNotFoundError(
+                "S3에서 영수증 이미지를 찾지 못했습니다."
+            )
+
+        app.dependency_overrides[get_s3_receipt_loader] = lambda: loader
+
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/v1/receipts/s3-read-check",
+                json={
+                    "requestId": "req-s3-read-check-404",
+                    "objectKey": "receipts/missing.heic",
+                },
+            )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["error"]["code"], "S3_RECEIPT_NOT_FOUND")
+        self.assertEqual(
+            response.json()["error"]["request_id"],
+            "req-s3-read-check-404",
+        )
+
     def test_analyzes_s3_receipt_with_spring_ocr_contract(self):
         def loader(object_key: str):
             self.assertEqual(object_key, "receipts/receipt-001.heic")

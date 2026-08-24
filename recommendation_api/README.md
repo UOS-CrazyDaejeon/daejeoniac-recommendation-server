@@ -603,6 +603,21 @@ public Mono<NextPlacesResponse> recommendNextPlaces(NextPlacesRequest request) {
 Spring이 S3 업로드를 마친 뒤 Python에 객체 키를 전달하는 코드는 다음처럼
 구성할 수 있다.
 
+S3 권한과 객체 경로만 먼저 확인하려면 OCR 없이 아래 API를 호출한다.
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/receipts/s3-read-check \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "requestId": "s3-read-check-001",
+    "objectKey": "receipts/2026/08/receipt-001.heic"
+  }'
+```
+
+성공하면 이미지 원본 없이 `AVAILABLE`, `contentType`, `sizeBytes`만 반환한다.
+`502 S3_RECEIPT_ACCESS_FAILED`가 발생하면 IAM/S3 권한을, `404`가 발생하면
+`objectKey`를 확인한다.
+
 ```java
 public record S3ReceiptAnalysisRequest(
         String requestId,
