@@ -668,7 +668,7 @@ EC2 보안 그룹의 인바운드는 다음처럼 제한한다.
 
 | 포트 | 소스 | 용도 |
 | --- | --- | --- |
-| TCP 80 | Spring EC2 보안 그룹 ID | Nginx 추천 API |
+| TCP 80 | Spring EC2 보안 그룹 ID | Nginx Python API (`/api/*`, `/ocr`) |
 | TCP 22 | 관리자 고정 IP | 초기 SSH 작업, SSM 사용 시 제거 가능 |
 
 TCP 8000은 외부에 열지 않는다. Compose가 `127.0.0.1:8000`에만
