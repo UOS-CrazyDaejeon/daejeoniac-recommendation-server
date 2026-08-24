@@ -617,6 +617,12 @@ def analyze_receipt_from_spring_ocr_request(
             "rawOcrCharCount": len(analysis.get("rawOcrText", "")),
         }
     except S3ReceiptError as exc:
+        logger.warning(
+            "S3 OCR failure receipt_uuid=%s code=%s: %s",
+            request.receiptUuid,
+            exc.error_code,
+            exc,
+        )
         return _error_response(
             exc.status_code,
             exc.error_code,
@@ -624,6 +630,11 @@ def analyze_receipt_from_spring_ocr_request(
             request.receiptUuid,
         )
     except ReceiptDocumentError as exc:
+        logger.warning(
+            "Receipt OCR analysis failure receipt_uuid=%s: %s",
+            request.receiptUuid,
+            exc,
+        )
         return _error_response(
             422,
             "RECEIPT_ANALYSIS_FAILED",
