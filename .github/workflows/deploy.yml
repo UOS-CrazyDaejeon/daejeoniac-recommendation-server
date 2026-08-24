@@ -57,7 +57,7 @@ jobs:
               "sudo -u ubuntu -H git -C \"$APP_DIR\" pull --ff-only origin main",
               "docker compose -f \"$COMPOSE_FILE\" up -d --build",
               "docker compose -f \"$COMPOSE_FILE\" ps",
-              "curl --fail --retry 12 --retry-delay 5 --retry-all-errors http://127.0.0.1:8000/health"
+              "curl --fail --silent --show-error --retry 12 --retry-delay 5 --retry-all-errors http://127.0.0.1:8000/openapi.json"
             ]
           }')
 
