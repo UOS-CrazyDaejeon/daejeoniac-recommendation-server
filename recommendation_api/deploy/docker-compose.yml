@@ -8,11 +8,9 @@ services:
       - path: ../.env
         required: false
     ports:
-      - "127.0.0.1:8000:8000"
+      - "8000:8000"
     restart: unless-stopped
     init: true
-    cpus: 1.5
-    mem_limit: 1400m
     read_only: true
     tmpfs:
       - /tmp:size=64m,mode=1777
