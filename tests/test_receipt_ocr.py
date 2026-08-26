@@ -1,11 +1,13 @@
 from io import BytesIO
 import unittest
+from unittest.mock import patch
 
 from PIL import Image
 
 from recommendation_api.receipt_ocr import (
     ReceiptDocumentError,
     _load_image_variants,
+    extract_receipt_text_from_image_bytes,
     parse_receipt_text,
 )
 
@@ -52,6 +54,60 @@ class ReceiptParserTest(unittest.TestCase):
     def test_requires_total_amount(self):
         with self.assertRaises(ReceiptDocumentError):
             parse_receipt_text("카페 파도\n2026-08-01\n아메리카노")
+
+    def test_uses_fast_path_when_basic_ocr_is_sufficient(self):
+        receipt_text = """
+        카페 파도
+        사업자등록번호 123-45-67890
+        주소 대전광역시 유성구 대학로 291
+        2026-08-01 14:32
+        공급가액 7,273원
+        부가세 727원
+        합계 8,000원
+        """
+        calls: list[int] = []
+
+        def run_tesseract(_image, *, language, psm):
+            calls.append(psm)
+            return receipt_text
+
+        with (
+            patch(
+                "recommendation_api.receipt_ocr._load_image_variants",
+                return_value=[("original", object()), ("contrast", object()), ("binary", object())],
+            ),
+            patch(
+                "recommendation_api.receipt_ocr._run_tesseract",
+                side_effect=run_tesseract,
+            ),
+        ):
+            text = extract_receipt_text_from_image_bytes(b"image")
+
+        self.assertEqual(text, receipt_text)
+        self.assertEqual(calls, [6, 6, 6])
+
+    def test_falls_back_to_all_layouts_when_fast_result_is_insufficient(self):
+        receipt_text = "카페 파도\n합계 8,000원"
+        calls: list[int] = []
+
+        def run_tesseract(_image, *, language, psm):
+            calls.append(psm)
+            return receipt_text if psm == 11 else ""
+
+        with (
+            patch(
+                "recommendation_api.receipt_ocr._load_image_variants",
+                return_value=[("original", object()), ("contrast", object()), ("binary", object())],
+            ),
+            patch(
+                "recommendation_api.receipt_ocr._run_tesseract",
+                side_effect=run_tesseract,
+            ),
+        ):
+            text = extract_receipt_text_from_image_bytes(b"image")
+
+        self.assertEqual(text, receipt_text)
+        self.assertEqual(len(calls), 12)
 
 
 if __name__ == "__main__":

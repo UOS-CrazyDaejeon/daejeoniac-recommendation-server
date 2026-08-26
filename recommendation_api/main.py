@@ -2,6 +2,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 import logging
 import os
+from time import perf_counter
 from typing import Any
 
 from fastapi import Depends, FastAPI, File, Form, Query, Request, UploadFile
@@ -405,10 +406,17 @@ def analyze_receipt(
             request_id=requestId,
         )
 
+    started_at = perf_counter()
     try:
         analysis = processor(image_bytes, OCR_LANGUAGE)
         result = analysis["result"]
         raw_ocr_text = analysis.get("rawOcrText", "")
+        logger.info(
+            "Receipt OCR completed request_id=%s document_id=%s elapsed_ms=%d",
+            requestId,
+            documentId,
+            (perf_counter() - started_at) * 1000,
+        )
         return {
             "requestId": requestId,
             "documentId": documentId,

@@ -20,6 +20,10 @@ class ReceiptDocumentError(ValueError):
 
 
 PSM_MODES = (6, 4, 11, 3)
+# 일반적인 영수증은 기본 레이아웃(PSM 6)만으로 충분히 읽힌다. 나머지 모드는
+# 결과가 불충분할 때만 실행해 저사양 배포 환경의 처리 시간을 줄인다.
+FAST_PSM_MODES = (6,)
+FAST_PATH_MIN_CONFIDENCE = 0.57
 MAX_IMAGE_LONG_EDGE = 3000
 
 _AMOUNT_TOKEN_RE = re.compile(
@@ -104,14 +108,46 @@ def _ocr_quality_score(text: str) -> int:
     return score
 
 
+def _is_sufficient_fast_ocr_result(text: str) -> bool:
+    """기본 OCR 결과가 구조화에 충분한 경우 느린 보조 시도를 생략한다."""
+    if not text.strip():
+        return False
+    try:
+        result = parse_receipt_text(text)
+    except ReceiptDocumentError:
+        return False
+    return float(result["confidence"]) >= FAST_PATH_MIN_CONFIDENCE
+
+
 def extract_receipt_text_from_image_bytes(
     image_bytes: bytes,
     language: str = "kor+eng",
 ) -> str:
-    """OCR a camera image using several layouts and preprocessing variants."""
+    """OCR a receipt with a fast path and fallback layouts when needed."""
     attempts: list[_OcrAttempt] = []
-    for variant_name, image in _load_image_variants(image_bytes):
+    variants = _load_image_variants(image_bytes)
+
+    for variant_name, image in variants:
+        for psm in FAST_PSM_MODES:
+            text = _run_tesseract(image, language=language, psm=psm)
+            attempts.append(
+                _OcrAttempt(
+                    variant=variant_name,
+                    psm=psm,
+                    text=text,
+                    score=_ocr_quality_score(text),
+                )
+            )
+
+    best_fast_attempt = max(attempts, key=lambda attempt: attempt.score, default=None)
+    if best_fast_attempt and _is_sufficient_fast_ocr_result(best_fast_attempt.text):
+        return best_fast_attempt.text
+
+    # 기본 결과가 불충분한 영수증만 기존의 모든 보조 레이아웃으로 재시도한다.
+    for variant_name, image in variants:
         for psm in PSM_MODES:
+            if psm in FAST_PSM_MODES:
+                continue
             text = _run_tesseract(image, language=language, psm=psm)
             attempts.append(
                 _OcrAttempt(
