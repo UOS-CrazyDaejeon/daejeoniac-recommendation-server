@@ -2,10 +2,12 @@ from io import BytesIO
 import unittest
 from unittest.mock import patch
 
+import numpy as np
 from PIL import Image
 
 from recommendation_api.receipt_ocr import (
     ReceiptDocumentError,
+    _crop_and_rectify_receipt,
     _load_image_variants,
     extract_receipt_text_from_image_bytes,
     parse_receipt_text,
@@ -25,6 +27,20 @@ class ReceiptParserTest(unittest.TestCase):
         )
         self.assertEqual(variants[0][1].mode, "RGB")
         self.assertEqual(variants[0][1].size, (32, 24))
+
+    def test_crops_and_rectifies_detected_receipt(self):
+        import cv2
+
+        canvas = np.zeros((420, 420, 3), dtype=np.uint8)
+        corners = np.array([[75, 45], [345, 85], [300, 370], [95, 330]], dtype=np.int32)
+        cv2.fillConvexPoly(canvas, corners, (255, 255, 255))
+        cv2.polylines(canvas, [corners], True, (220, 220, 220), 4)
+
+        receipt = _crop_and_rectify_receipt(Image.fromarray(canvas))
+
+        self.assertGreaterEqual(receipt.width, 1200)
+        self.assertGreater(receipt.height, 900)
+        self.assertLess(receipt.height, 1600)
 
     def test_extracts_structured_receipt_fields(self):
         result = parse_receipt_text(

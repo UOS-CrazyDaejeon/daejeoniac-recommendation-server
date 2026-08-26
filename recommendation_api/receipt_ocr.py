@@ -23,8 +23,18 @@ PSM_MODES = (6, 4, 11, 3)
 # 일반적인 영수증은 기본 레이아웃(PSM 6)만으로 충분히 읽힌다. 나머지 모드는
 # 결과가 불충분할 때만 실행해 저사양 배포 환경의 처리 시간을 줄인다.
 FAST_PSM_MODES = (6,)
-FAST_PATH_MIN_CONFIDENCE = 0.57
+# 빠른 경로는 거의 모든 핵심 필드가 잡힌 경우에만 사용한다. 애매한 결과는
+# 보조 OCR까지 실행해 정확도를 우선한다.
+FAST_PATH_MIN_CONFIDENCE = 0.86
+# 사진 전체를 먼저 지나치게 축소하면 멀리 찍힌 영수증 글자가 사라질 수 있다.
+# 문서 보정 전에는 조금 더 큰 크기를 보존하고, 보정 후 OCR 크기로 제한한다.
+MAX_SOURCE_LONG_EDGE = 4000
 MAX_IMAGE_LONG_EDGE = 3000
+RECEIPT_DETECTION_MAX_EDGE = 1600
+# 멀리 촬영된 영수증도 후보로 잡되, 너무 작은 노이즈 윤곽은 제외한다.
+RECEIPT_MIN_AREA_RATIO = 0.03
+RECEIPT_MIN_EDGE = 96
+RECEIPT_MIN_OCR_WIDTH = 1200
 
 _AMOUNT_TOKEN_RE = re.compile(
     r"(?<!\d)[0-9Oo](?:[0-9Oo,\s]*[0-9Oo])?(?:\s*원)?"
@@ -52,6 +62,136 @@ class _OcrAttempt:
     score: int
 
 
+def _resize_max_edge(image: Any, max_edge: int) -> Any:
+    from PIL import Image
+
+    if max(image.size) <= max_edge:
+        return image
+    ratio = max_edge / max(image.size)
+    size = (max(1, int(image.width * ratio)), max(1, int(image.height * ratio)))
+    return image.resize(size, Image.Resampling.LANCZOS)
+
+
+def _order_receipt_corners(points: Any) -> Any:
+    """Return four document corners in top-left, top-right, bottom-right, bottom-left order."""
+    import numpy as np
+
+    corners = np.asarray(points, dtype="float32").reshape(4, 2)
+    sums = corners.sum(axis=1)
+    differences = corners[:, 0] - corners[:, 1]
+    return np.array(
+        [
+            corners[sums.argmin()],
+            corners[differences.argmax()],
+            corners[sums.argmax()],
+            corners[differences.argmin()],
+        ],
+        dtype="float32",
+    )
+
+
+def _find_receipt_corners(image: Any) -> Any | None:
+    """Detect the largest plausible four-corner document boundary in an RGB image."""
+    import cv2
+    import numpy as np
+
+    source = np.asarray(image)
+    height, width = source.shape[:2]
+    scale = min(1.0, RECEIPT_DETECTION_MAX_EDGE / max(height, width))
+    if scale < 1.0:
+        detection = cv2.resize(
+            source,
+            (max(1, round(width * scale)), max(1, round(height * scale))),
+            interpolation=cv2.INTER_AREA,
+        )
+    else:
+        detection = source
+
+    gray = cv2.cvtColor(detection, cv2.COLOR_RGB2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(blurred, 50, 150)
+    edges = cv2.morphologyEx(
+        edges,
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5)),
+        iterations=2,
+    )
+    contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    min_area = detection.shape[0] * detection.shape[1] * RECEIPT_MIN_AREA_RATIO
+
+    for contour in sorted(contours, key=cv2.contourArea, reverse=True):
+        if cv2.contourArea(contour) < min_area:
+            break
+        perimeter = cv2.arcLength(contour, True)
+        approximation = cv2.approxPolyDP(contour, 0.02 * perimeter, True)
+        if len(approximation) != 4 or not cv2.isContourConvex(approximation):
+            continue
+        corners = _order_receipt_corners(approximation.reshape(4, 2))
+        if scale < 1.0:
+            corners /= scale
+        return corners
+    return None
+
+
+def _crop_and_rectify_receipt(image: Any) -> Any:
+    """Crop and perspective-correct a receipt, falling back to the original image safely."""
+    try:
+        import cv2
+        import numpy as np
+        from PIL import Image
+
+        corners = _find_receipt_corners(image)
+        if corners is None:
+            return image
+
+        top_left, top_right, bottom_right, bottom_left = corners
+        target_width = round(
+            max(
+                np.linalg.norm(bottom_right - bottom_left),
+                np.linalg.norm(top_right - top_left),
+            )
+        )
+        target_height = round(
+            max(
+                np.linalg.norm(top_right - bottom_right),
+                np.linalg.norm(top_left - bottom_left),
+            )
+        )
+        if min(target_width, target_height) < RECEIPT_MIN_EDGE:
+            return image
+
+        transform = cv2.getPerspectiveTransform(
+            corners,
+            np.array(
+                [
+                    [0, 0],
+                    [target_width - 1, 0],
+                    [target_width - 1, target_height - 1],
+                    [0, target_height - 1],
+                ],
+                dtype="float32",
+            ),
+        )
+        rectified = cv2.warpPerspective(
+            np.asarray(image),
+            transform,
+            (target_width, target_height),
+            flags=cv2.INTER_CUBIC,
+            borderMode=cv2.BORDER_REPLICATE,
+        )
+        receipt = Image.fromarray(rectified)
+        if receipt.width < RECEIPT_MIN_OCR_WIDTH:
+            ratio = RECEIPT_MIN_OCR_WIDTH / receipt.width
+            receipt = receipt.resize(
+                (RECEIPT_MIN_OCR_WIDTH, max(1, round(receipt.height * ratio))),
+                Image.Resampling.LANCZOS,
+            )
+        return receipt
+    except Exception:
+        # 문서 테두리 검출은 보조 전처리이므로, 실패해도 기존 OCR 경로를 유지한다.
+        return image
+
+
 def _load_image_variants(image_bytes: bytes) -> list[tuple[str, Any]]:
     """Load a camera image and create a small set of OCR-friendly variants."""
     if not image_bytes:
@@ -63,14 +203,27 @@ def _load_image_variants(image_bytes: bytes) -> list[tuple[str, Any]]:
         with Image.open(BytesIO(image_bytes)) as source:
             image = ImageOps.exif_transpose(source).convert("RGB")
 
-        if max(image.size) > MAX_IMAGE_LONG_EDGE:
-            ratio = MAX_IMAGE_LONG_EDGE / max(image.size)
-            size = (max(1, int(image.width * ratio)), max(1, int(image.height * ratio)))
-            image = image.resize(size, Image.Resampling.LANCZOS)
+        image = _resize_max_edge(image, MAX_SOURCE_LONG_EDGE)
+        image = _crop_and_rectify_receipt(image)
+        image = _resize_max_edge(image, MAX_IMAGE_LONG_EDGE)
 
         gray = ImageOps.grayscale(image)
         contrast = ImageEnhance.Contrast(gray).enhance(1.8)
-        binary = contrast.point(lambda pixel: 255 if pixel >= 170 else 0)
+        try:
+            import cv2
+            import numpy as np
+
+            adaptive = cv2.adaptiveThreshold(
+                np.asarray(contrast),
+                255,
+                cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY,
+                31,
+                9,
+            )
+            binary = Image.fromarray(adaptive)
+        except Exception:
+            binary = contrast.point(lambda pixel: 255 if pixel >= 170 else 0)
         return [
             ("original", image),
             ("contrast", contrast),
