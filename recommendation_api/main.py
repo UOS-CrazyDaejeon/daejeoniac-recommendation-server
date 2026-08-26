@@ -1,5 +1,6 @@
 from collections.abc import Callable
 from datetime import datetime, timezone
+import json
 import logging
 import os
 from time import perf_counter
@@ -620,6 +621,13 @@ def analyze_receipt_from_spring_ocr_request(
             "Sending Spring OCR callback receipt_uuid=%s payload=%s",
             request.receiptUuid,
             callback_payload,
+        )
+        # Uvicorn 기본 설정에서는 애플리케이션 INFO 로그가 숨겨질 수 있어,
+        # 콜백 직전 본문은 Docker 표준 출력에도 명시적으로 남긴다.
+        print(
+            "SPRING_OCR_CALLBACK_PAYLOAD "
+            + json.dumps(callback_payload, ensure_ascii=False),
+            flush=True,
         )
         callback(callback_payload)
         return {
