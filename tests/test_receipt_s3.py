@@ -10,7 +10,6 @@ from botocore.exceptions import ClientError
 from recommendation_api.main import (
     app,
     get_gpt_receipt_processor,
-    get_ocr_result_callback,
     get_receipt_processor,
     get_s3_receipt_object_lister,
     get_s3_receipt_loader,
@@ -277,7 +276,7 @@ class OcrResultCallbackTest(unittest.TestCase):
             payload,
             {
                 "receiptUuid": "receipt-uuid-001",
-                "ocrStatus": "COMPLETED",
+                "ocrStatus": "SUCCESS",
                 "ocrPlaceName": "카페 파도",
                 "ocrPlaceAddress": "대전광역시 유성구 대학로 291",
                 "ocrPaidAt": "2026-08-23T14:32:00",
@@ -348,8 +347,15 @@ class S3ReceiptApiTest(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["result"]["totalAmount"], 8000)
-        self.assertEqual(response.json()["requestId"], "req-s3-001")
+        self.assertEqual(
+            response.json(),
+            {
+                "ocrStatus": "SUCCESS",
+                "ocrPlaceName": "카페 파도",
+                "ocrPlaceAddress": "대전광역시 유성구 대학로 291",
+                "ocrPaidAt": "2026-08-01T14:32:00",
+            },
+        )
 
     def test_reads_s3_receipt_without_running_ocr(self):
         def loader(object_key: str):
@@ -443,8 +449,6 @@ class S3ReceiptApiTest(unittest.TestCase):
 
         app.dependency_overrides[get_s3_receipt_loader] = lambda: loader
         app.dependency_overrides[get_receipt_processor] = lambda: processor
-        callback_payloads = []
-        app.dependency_overrides[get_ocr_result_callback] = lambda: callback_payloads.append
 
         with TestClient(app) as client:
             response = client.post(
@@ -456,47 +460,15 @@ class S3ReceiptApiTest(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["receiptUuid"], "receipt-uuid-001")
-        self.assertEqual(response.json()["result"]["totalAmount"], 8000)
         self.assertEqual(
-            callback_payloads[0]["ocrPaidAt"],
-            "2026-08-01T14:32:00",
-        )
-
-    def test_returns_502_when_spring_ocr_callback_fails(self):
-        app.dependency_overrides[get_s3_receipt_loader] = lambda: (
-            lambda object_key: S3ReceiptObject(object_key, "image/jpeg", b"image-bytes")
-        )
-        app.dependency_overrides[get_receipt_processor] = lambda: (
-            lambda image_bytes, language: {
-                "result": receipt_result(),
-                "rawOcrText": "합계 8,000원",
-            }
-        )
-
-        def fail_callback(payload):
-            del payload
-            raise ReceiptOcrCallbackError("Spring OCR 결과 콜백 요청에 실패했습니다.")
-
-        app.dependency_overrides[get_ocr_result_callback] = lambda: fail_callback
-
-        with TestClient(app) as client:
-            response = client.post(
-                "/ocr",
-                json={
-                    "receiptUuid": "receipt-uuid-callback-failure",
-                    "objectKey": "receipts/receipt-001.jpg",
-                },
-            )
-
-        self.assertEqual(response.status_code, 502)
-        self.assertEqual(
-            response.json()["error"]["code"],
-            "OCR_RESULT_CALLBACK_FAILED",
-        )
-        self.assertEqual(
-            response.json()["error"]["request_id"],
-            "receipt-uuid-callback-failure",
+            response.json(),
+            {
+                "receiptUuid": "receipt-uuid-001",
+                "ocrStatus": "SUCCESS",
+                "ocrPlaceName": "카페 파도",
+                "ocrPlaceAddress": "대전광역시 유성구 대학로 291",
+                "ocrPaidAt": "2026-08-01T14:32:00",
+            },
         )
 
     def test_analyzes_s3_receipt_with_gpt_mini(self):
@@ -523,7 +495,15 @@ class S3ReceiptApiTest(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["model"], "gpt-5-mini-2025-08-07")
+        self.assertEqual(
+            response.json(),
+            {
+                "ocrStatus": "SUCCESS",
+                "ocrPlaceName": "카페 파도",
+                "ocrPlaceAddress": "대전광역시 유성구 대학로 291",
+                "ocrPaidAt": "2026-08-01T14:32:00",
+            },
+        )
 
     def test_returns_not_found_when_s3_object_is_missing(self):
         def loader(s3_key: str):

@@ -58,21 +58,29 @@ def _ocr_paid_at(result: dict[str, Any]) -> str | None:
     return datetime.combine(paid_date, paid_time).isoformat(timespec="seconds")
 
 
+def _ocr_success_status() -> str:
+    """Spring Receipt.OcrStatus enum과 같은 완료 상태를 사용한다."""
+    return os.environ.get("SPRING_OCR_SUCCESS_STATUS", "SUCCESS").strip() or "SUCCESS"
+
+
+def build_ocr_result_fields(result: dict[str, Any]) -> dict[str, str | None]:
+    """외부에 노출할 영수증 OCR 핵심 결과 네 필드만 만든다."""
+    place_name = result.get("merchantName")
+    place_address = result.get("address")
+    return {
+        "ocrStatus": _ocr_success_status(),
+        "ocrPlaceName": str(place_name) if place_name is not None else None,
+        "ocrPlaceAddress": str(place_address) if place_address is not None else None,
+        "ocrPaidAt": _ocr_paid_at(result),
+    }
+
+
 def build_ocr_result_callback_payload(
     receipt_uuid: str,
     result: dict[str, Any],
 ) -> dict[str, str | None]:
     """Spring의 /api/v1/receipts/ocr-result 요청 계약에 맞춰 결과를 변환한다."""
-    place_name = result.get("merchantName")
-    place_address = result.get("address")
-    return {
-        "receiptUuid": receipt_uuid,
-        "ocrStatus": os.environ.get("SPRING_OCR_SUCCESS_STATUS", "COMPLETED").strip()
-        or "COMPLETED",
-        "ocrPlaceName": str(place_name) if place_name is not None else None,
-        "ocrPlaceAddress": str(place_address) if place_address is not None else None,
-        "ocrPaidAt": _ocr_paid_at(result),
-    }
+    return {"receiptUuid": receipt_uuid, **build_ocr_result_fields(result)}
 
 
 def post_ocr_result_callback(

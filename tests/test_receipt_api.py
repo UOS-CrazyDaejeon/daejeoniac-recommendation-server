@@ -69,13 +69,15 @@ class ReceiptApiTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
-        self.assertEqual(payload["requestId"], "req_001")
-        self.assertEqual(payload["documentId"], "doc_1001")
-        self.assertEqual(payload["userId"], 4)
-        self.assertEqual(payload["status"], "COMPLETED")
-        self.assertEqual(payload["result"]["totalAmount"], 8000)
-        self.assertEqual(payload["rawOcrCharCount"], len("카페 파도\n합계 8,000원"))
-        self.assertNotIn("rawOcrText", payload)
+        self.assertEqual(
+            payload,
+            {
+                "ocrStatus": "SUCCESS",
+                "ocrPlaceName": "카페 파도",
+                "ocrPlaceAddress": "대전광역시 유성구 대학로 291",
+                "ocrPaidAt": "2026-08-01T14:32:00",
+            },
+        )
 
     def test_returns_safe_content_error(self):
         def fail_analysis(image_bytes: bytes, language: str):
@@ -126,11 +128,15 @@ class ReceiptApiTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
-        self.assertEqual(payload["requestId"], "req_gpt_001")
-        self.assertEqual(payload["model"], "gpt-5-mini-2025-08-07")
-        self.assertEqual(payload["result"]["totalAmount"], 8000)
-        self.assertEqual(payload["processingTimeMs"], 1260)
-        self.assertEqual(payload["usage"]["totalTokens"], 1320)
+        self.assertEqual(
+            payload,
+            {
+                "ocrStatus": "SUCCESS",
+                "ocrPlaceName": "카페 파도",
+                "ocrPlaceAddress": "대전광역시 유성구 대학로 291",
+                "ocrPaidAt": "2026-08-01T14:32:00",
+            },
+        )
 
     def test_returns_503_when_gpt_api_key_is_not_configured(self):
         def fail_analysis(image_bytes: bytes, content_type: str):

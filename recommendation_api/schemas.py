@@ -135,16 +135,23 @@ class ReceiptResult(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
-class ReceiptAnalysisResponse(BaseModel):
-    requestId: str | None = None
-    documentId: str | None = None
-    userId: int | None = None
-    documentType: Literal["RECEIPT"] = "RECEIPT"
-    status: Literal["COMPLETED"] = "COMPLETED"
-    result: ReceiptResult
-    warnings: list[str] = Field(default_factory=list)
-    processedAt: str
-    rawOcrCharCount: int = Field(ge=0)
+class ReceiptOcrFieldsResponse(BaseModel):
+    """영수증 분석 API가 공통으로 반환하는 핵심 OCR 결과."""
+
+    ocrStatus: str = Field(description="OCR 처리 상태", examples=["SUCCESS"])
+    ocrPlaceName: str | None = Field(default=None, description="OCR로 추출한 상호명")
+    ocrPlaceAddress: str | None = Field(default=None, description="OCR로 추출한 주소")
+    ocrPaidAt: str | None = Field(
+        default=None,
+        description="OCR로 추출한 결제 일시(ISO-8601)",
+        examples=["2026-08-26T07:29:51"],
+    )
+
+
+class ReceiptSpringOcrResponse(ReceiptOcrFieldsResponse):
+    """Spring이 receiptId에 대응해 저장할 S3 영수증 OCR 응답."""
+
+    receiptUuid: str = Field(description="Spring이 전달한 영수증 UUID")
 
 
 class S3ReceiptAnalysisRequest(BaseModel):
@@ -215,15 +222,6 @@ class ReceiptOcrRequest(BaseModel):
     )
 
 
-class ReceiptOcrResponse(BaseModel):
-    receiptUuid: str
-    status: Literal["COMPLETED"] = "COMPLETED"
-    result: ReceiptResult
-    warnings: list[str] = Field(default_factory=list)
-    processedAt: str
-    rawOcrCharCount: int = Field(ge=0)
-
-
 class S3FaceMosaicRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -254,17 +252,3 @@ class ReceiptVisionUsage(BaseModel):
     inputTokens: int = Field(ge=0)
     outputTokens: int = Field(ge=0)
     totalTokens: int = Field(ge=0)
-
-
-class GptReceiptAnalysisResponse(BaseModel):
-    requestId: str | None = None
-    documentId: str | None = None
-    userId: int | None = None
-    documentType: Literal["RECEIPT"] = "RECEIPT"
-    status: Literal["COMPLETED"] = "COMPLETED"
-    model: str
-    result: ReceiptResult
-    warnings: list[str] = Field(default_factory=list)
-    processedAt: str
-    processingTimeMs: int = Field(ge=0)
-    usage: ReceiptVisionUsage | None = None

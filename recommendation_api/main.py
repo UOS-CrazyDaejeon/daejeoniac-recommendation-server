@@ -1,6 +1,5 @@
 from collections.abc import Callable
 from datetime import datetime, timezone
-import json
 import logging
 import os
 from time import perf_counter
@@ -31,9 +30,8 @@ from recommendation_api.receipt_gpt import (
     analyze_receipt_image_with_gpt,
 )
 from recommendation_api.receipt_callback import (
-    ReceiptOcrCallbackError,
+    build_ocr_result_fields,
     build_ocr_result_callback_payload,
-    post_ocr_result_callback,
 )
 from recommendation_api.receipt_ocr import (
     ReceiptDocumentError,
@@ -48,12 +46,11 @@ from recommendation_api.receipt_s3 import (
 )
 from recommendation_api.schemas import (
     FaceMosaicResponse,
-    GptReceiptAnalysisResponse,
     NextPlacesRequest,
     NextPlacesResponse,
-    ReceiptAnalysisResponse,
+    ReceiptOcrFieldsResponse,
     ReceiptOcrRequest,
-    ReceiptOcrResponse,
+    ReceiptSpringOcrResponse,
     RecommendationRequest,
     RecommendationResponse,
     SimilarPlacesRequest,
@@ -73,7 +70,6 @@ S3ImageLoader = Callable[[str], S3ReceiptObject]
 S3ReceiptObjectLister = Callable[[int], S3ReceiptObjectList]
 FaceMosaicProcessor = Callable[[bytes, str], FaceMosaicResult]
 S3MosaicUploader = Callable[[FaceMosaicResult], str]
-ReceiptOcrResultCallback = Callable[[dict[str, str | None]], None]
 logger = logging.getLogger(__name__)
 
 MAX_RECEIPT_IMAGE_BYTES = int(
@@ -133,11 +129,6 @@ S3_IMAGE_ERROR_RESPONSES = {
     422: {"description": "얼굴 검출 또는 이미지 처리 실패"},
     502: {"description": "S3 읽기 또는 저장 실패"},
     503: {"description": "S3 또는 얼굴 검출 설정 누락"},
-}
-SPRING_OCR_CALLBACK_ERROR_RESPONSES = {
-    **S3_IMAGE_ERROR_RESPONSES,
-    502: {"description": "S3 읽기 또는 Spring OCR 결과 콜백 실패"},
-    503: {"description": "S3 또는 Spring OCR 결과 콜백 설정 누락"},
 }
 LOCAL_FACE_ERROR_RESPONSES = {
     413: {"description": "이미지 용량 제한 초과"},
@@ -247,10 +238,6 @@ def get_face_mosaic_processor() -> FaceMosaicProcessor:
 
 def get_s3_mosaic_uploader() -> S3MosaicUploader:
     return lambda result: store_s3_mosaic_image(result)
-
-
-def get_ocr_result_callback() -> ReceiptOcrResultCallback:
-    return post_ocr_result_callback
 
 
 @app.post(
@@ -370,14 +357,11 @@ def create_next_place_recommendations(
 
 @app.post(
     "/api/v1/receipts/analyze",
-    response_model=ReceiptAnalysisResponse,
+    response_model=ReceiptOcrFieldsResponse,
     tags=["영수증 분석"],
     summary="영수증 OCR 분석",
-    description=(
-        "업로드한 영수증 이미지를 Tesseract OCR로 읽어 상호명, 결제 시각, "
-        "총액과 품목 등의 구조화된 정보를 반환합니다."
-    ),
-    response_description="OCR로 추출한 영수증 정보",
+    description="업로드한 영수증 이미지에서 상호명, 주소, 결제 일시를 추출합니다.",
+    response_description="OCR 핵심 추출 결과",
     responses=RECEIPT_ERROR_RESPONSES,
 )
 def analyze_receipt(
@@ -411,25 +395,13 @@ def analyze_receipt(
     try:
         analysis = processor(image_bytes, OCR_LANGUAGE)
         result = analysis["result"]
-        raw_ocr_text = analysis.get("rawOcrText", "")
         logger.info(
             "Receipt OCR completed request_id=%s document_id=%s elapsed_ms=%d",
             requestId,
             documentId,
             (perf_counter() - started_at) * 1000,
         )
-        return {
-            "requestId": requestId,
-            "documentId": documentId,
-            "userId": userId,
-            "documentType": "RECEIPT",
-            "status": "COMPLETED",
-            "result": result,
-            "warnings": result.get("warnings", []),
-            "processedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            # OCR 원문에는 개인정보가 포함될 수 있어 길이만 반환한다.
-            "rawOcrCharCount": len(raw_ocr_text),
-        }
+        return build_ocr_result_fields(result)
     except ReceiptDocumentError as exc:
         return _error_response(
             status_code=422,
@@ -453,14 +425,11 @@ def analyze_receipt(
 
 @app.post(
     "/api/v1/receipts/analyze-gpt-mini",
-    response_model=GptReceiptAnalysisResponse,
+    response_model=ReceiptOcrFieldsResponse,
     tags=["영수증 분석"],
     summary="GPT-5 Mini 영수증 분석",
-    description=(
-        "업로드한 영수증 이미지를 GPT-5 Mini Vision으로 분석해 구조화된 정보를 "
-        "반환합니다. 처리 시간과 토큰 사용량도 함께 제공합니다."
-    ),
-    response_description="GPT-5 Mini가 추출한 영수증 정보",
+    description="업로드한 영수증 이미지에서 GPT Vision으로 상호명, 주소, 결제 일시를 추출합니다.",
+    response_description="OCR 핵심 추출 결과",
     responses=GPT_RECEIPT_ERROR_RESPONSES,
 )
 def analyze_receipt_with_gpt_mini(
@@ -496,19 +465,7 @@ def analyze_receipt_with_gpt_mini(
             image.content_type or "application/octet-stream",
         )
         result = analysis["result"]
-        return {
-            "requestId": requestId,
-            "documentId": documentId,
-            "userId": userId,
-            "documentType": "RECEIPT",
-            "status": "COMPLETED",
-            "model": analysis["model"],
-            "result": result,
-            "warnings": result.get("warnings", []),
-            "processedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            "processingTimeMs": analysis["processingTimeMs"],
-            "usage": analysis.get("usage"),
-        }
+        return build_ocr_result_fields(result)
     except ReceiptVisionConfigurationError as exc:
         return _error_response(
             status_code=503,
@@ -554,90 +511,55 @@ def _completed_ocr_receipt_response(
     analysis: dict[str, Any],
     request: S3ReceiptAnalysisRequest,
 ) -> dict[str, Any]:
-    result = analysis["result"]
-    return {
-        "requestId": request.requestId,
-        "documentId": request.documentId,
-        "userId": request.userId,
-        "documentType": "RECEIPT",
-        "status": "COMPLETED",
-        "result": result,
-        "warnings": result.get("warnings", []),
-        "processedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "rawOcrCharCount": len(analysis.get("rawOcrText", "")),
-    }
+    del request
+    return build_ocr_result_fields(analysis["result"])
 
 
 def _completed_gpt_receipt_response(
     analysis: dict[str, Any],
     request: S3ReceiptAnalysisRequest,
 ) -> dict[str, Any]:
-    result = analysis["result"]
-    return {
-        "requestId": request.requestId,
-        "documentId": request.documentId,
-        "userId": request.userId,
-        "documentType": "RECEIPT",
-        "status": "COMPLETED",
-        "model": analysis["model"],
-        "result": result,
-        "warnings": result.get("warnings", []),
-        "processedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "processingTimeMs": analysis["processingTimeMs"],
-        "usage": analysis.get("usage"),
-    }
+    del request
+    return build_ocr_result_fields(analysis["result"])
 
 
 @app.post(
     "/ocr",
-    response_model=ReceiptOcrResponse,
+    response_model=ReceiptSpringOcrResponse,
     tags=["영수증 분석"],
     summary="S3 영수증 OCR 분석(Spring 연동용)",
     description=(
         "Spring이 receiptUuid와 S3 objectKey를 JSON으로 전달하면, 서버가 "
-        "설정된 S3 버킷에서 이미지를 읽어 OCR 분석한 뒤, 설정된 Spring 결과 "
-        "콜백 URL(/api/v1/receipts/ocr-result)로 결과를 전송합니다."
+        "설정된 S3 버킷에서 이미지를 읽어 OCR 분석한 뒤 결과를 HTTP 응답으로 반환합니다."
     ),
-    response_description="Spring 콜백 전송 후 receiptUuid에 대응하는 OCR 분석 결과",
-    responses=SPRING_OCR_CALLBACK_ERROR_RESPONSES,
+    response_description="Spring이 receiptId에 저장할 OCR 핵심 추출 결과",
+    responses=S3_IMAGE_ERROR_RESPONSES,
 )
 def analyze_receipt_from_spring_ocr_request(
     request: ReceiptOcrRequest,
     loader: S3ImageLoader = Depends(get_s3_receipt_loader),
     processor: ReceiptProcessor = Depends(get_receipt_processor),
-    callback: ReceiptOcrResultCallback = Depends(get_ocr_result_callback),
 ) -> dict[str, Any] | JSONResponse:
     try:
         source = loader(request.objectKey)
         analysis = processor(source.image_bytes, OCR_LANGUAGE)
         result = analysis["result"]
-        callback_payload = build_ocr_result_callback_payload(request.receiptUuid, result)
+        response_payload = build_ocr_result_callback_payload(request.receiptUuid, result)
         logger.info(
             "OCR analysis completed receipt_uuid=%s result=%s",
             request.receiptUuid,
             result,
         )
         logger.info(
-            "Sending Spring OCR callback receipt_uuid=%s payload=%s",
+            "Returning Spring OCR response receipt_uuid=%s payload=%s",
             request.receiptUuid,
-            callback_payload,
+            response_payload,
         )
-        # Uvicorn 기본 설정에서는 애플리케이션 INFO 로그가 숨겨질 수 있어,
-        # 콜백 직전 본문은 Docker 표준 출력에도 명시적으로 남긴다.
         print(
-            "SPRING_OCR_CALLBACK_PAYLOAD "
-            + json.dumps(callback_payload, ensure_ascii=False),
+            f"SPRING_OCR_RESPONSE {response_payload}",
             flush=True,
         )
-        callback(callback_payload)
-        return {
-            "receiptUuid": request.receiptUuid,
-            "status": "COMPLETED",
-            "result": result,
-            "warnings": result.get("warnings", []),
-            "processedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            "rawOcrCharCount": len(analysis.get("rawOcrText", "")),
-        }
+        return response_payload
     except S3ReceiptError as exc:
         logger.warning(
             "S3 OCR failure receipt_uuid=%s code=%s: %s",
@@ -660,18 +582,6 @@ def analyze_receipt_from_spring_ocr_request(
         return _error_response(
             422,
             "RECEIPT_ANALYSIS_FAILED",
-            str(exc),
-            request.receiptUuid,
-        )
-    except ReceiptOcrCallbackError as exc:
-        logger.warning(
-            "Spring OCR callback failure receipt_uuid=%s: %s",
-            request.receiptUuid,
-            exc,
-        )
-        return _error_response(
-            exc.status_code,
-            exc.error_code,
             str(exc),
             request.receiptUuid,
         )
@@ -776,14 +686,14 @@ def list_s3_receipt_objects_for_check(
 
 @app.post(
     "/api/v1/receipts/analyze-from-s3",
-    response_model=ReceiptAnalysisResponse,
+    response_model=ReceiptOcrFieldsResponse,
     tags=["영수증 분석"],
     summary="S3 영수증 OCR 분석",
     description=(
         "Spring이 전달한 S3 객체 키로 영수증 이미지를 읽어 "
         "Tesseract OCR로 분석합니다."
     ),
-    response_description="S3 이미지에서 추출한 영수증 정보",
+    response_description="S3 이미지에서 추출한 OCR 핵심 결과",
     responses=S3_IMAGE_ERROR_RESPONSES,
 )
 def analyze_receipt_from_s3(
@@ -821,14 +731,14 @@ def analyze_receipt_from_s3(
 
 @app.post(
     "/api/v1/receipts/analyze-gpt-mini-from-s3",
-    response_model=GptReceiptAnalysisResponse,
+    response_model=ReceiptOcrFieldsResponse,
     tags=["영수증 분석"],
     summary="S3 영수증 GPT-5 Mini 분석",
     description=(
         "Spring이 전달한 S3 객체 키로 영수증 이미지를 읽어 "
         "GPT-5 Mini Vision으로 분석합니다."
     ),
-    response_description="GPT-5 Mini가 추출한 S3 영수증 정보",
+    response_description="S3 이미지에서 추출한 OCR 핵심 결과",
     responses=S3_IMAGE_ERROR_RESPONSES,
 )
 def analyze_receipt_with_gpt_mini_from_s3(
