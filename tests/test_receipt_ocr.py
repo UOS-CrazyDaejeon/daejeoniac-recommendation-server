@@ -67,6 +67,23 @@ class ReceiptParserTest(unittest.TestCase):
         self.assertEqual(result["paymentMethod"], "신용카드")
         self.assertEqual(result["warnings"], [])
 
+    def test_prefers_store_name_near_business_number_over_card_details(self):
+        result = parse_receipt_text(
+            """
+            [영수증]
+            청화원(대학로) / 637-34-00700 / 길영남
+            서울 종로구 대명길 36 (명륜2가) 1,2층
+            2025-06-11 18:35:36
+            합계 금액 68,000원
+            할부 개월: 일시불
+            """
+        )
+
+        self.assertEqual(result["merchantName"], "청화원(대학로)")
+        self.assertEqual(result["address"], "서울 종로구 대명길 36 (명륜2가) 1,2층")
+        self.assertEqual(result["transactionDate"], "2025-06-11")
+        self.assertEqual(result["transactionTime"], "18:35:36")
+
     def test_requires_total_amount(self):
         with self.assertRaises(ReceiptDocumentError):
             parse_receipt_text("카페 파도\n2026-08-01\n아메리카노")

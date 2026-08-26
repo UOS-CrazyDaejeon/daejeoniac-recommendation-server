@@ -40,7 +40,9 @@ _AMOUNT_TOKEN_RE = re.compile(
     r"(?<!\d)[0-9Oo](?:[0-9Oo,\s]*[0-9Oo])?(?:\s*원)?"
 )
 _DATE_RE = re.compile(r"(?<!\d)(20\d{2})\s*[./-]\s*(\d{1,2})\s*[./-]\s*(\d{1,2})")
-_TIME_RE = re.compile(r"(?<!\d)(\d{1,2})\s*[:시]\s*(\d{2})")
+_TIME_RE = re.compile(
+    r"(?<!\d)(\d{1,2})\s*[:시]\s*(\d{2})(?:\s*[:분]\s*(\d{2}))?"
+)
 _BUSINESS_NUMBER_RE = re.compile(r"(?<!\d)(\d{3})\D?(\d{2})\D?(\d{5})(?!\d)")
 _APPROVAL_NUMBER_RE = re.compile(
     r"(?:영수증|승인번호|승인)[^\d]{0,12}"
@@ -520,16 +522,54 @@ def _labeled_amount(
 
 
 def _extract_merchant(lines: list[str]) -> str | None:
+    def normalize(candidate: str) -> str | None:
+        value = _BUSINESS_NUMBER_RE.sub("", candidate)
+        value = value.split("/", 1)[0].strip(" /[]:：-")
+        value = re.sub(r"\s+", " ", value)
+        if len(value) < 2 or not re.search(r"[가-힣A-Za-z]", value):
+            return None
+        return value
+
     labels = ("상호명", "가맹점명", "상호", "매장명", "업체명")
     for line in lines:
         for label in labels:
             if label in line:
-                value = line.split(label, 1)[1].lstrip(" ]:：-")
-                value = _BUSINESS_NUMBER_RE.sub("", value).strip(" /[]")
+                value = normalize(line.split(label, 1)[1].lstrip(" ]:：-"))
                 if value:
                     return value
 
-    ignored = ("사업자", "합계", "총액", "공급가액", "부가세", "결제", "신용카드", "체크카드")
+    # POS 영수증은 보통 "상호 / 사업자번호 / 대표자" 형식의 첫 줄을 사용한다.
+    # 하단 카드 승인 정보보다 이 줄을 우선해야 할부 개월 같은 값을 상호로 오인하지 않는다.
+    for line in lines:
+        business_match = _BUSINESS_NUMBER_RE.search(line)
+        if business_match is None:
+            continue
+        value = normalize(line[:business_match.start()])
+        if value and not any(token in value for token in ("사업자", "등록번호", "대표자")):
+            return value
+
+    ignored = (
+        "사업자",
+        "합계",
+        "총액",
+        "공급가액",
+        "부가세",
+        "결제",
+        "신용카드",
+        "체크카드",
+        "할부",
+        "개월",
+        "일시불",
+        "카드번호",
+        "승인번호",
+        "승인일시",
+        "가맹점번호",
+        "판매금액",
+        "영수증",
+        "상품명",
+        "단가",
+        "수량",
+    )
     for line in lines:
         if (
             len(line) <= 60
@@ -537,7 +577,9 @@ def _extract_merchant(lines: list[str]) -> str | None:
             and not _DATE_RE.search(line)
             and not _amounts_on_line(line)
         ):
-            return line
+            value = normalize(line)
+            if value:
+                return value
     return None
 
 
@@ -755,7 +797,10 @@ def parse_receipt_text(text: str) -> dict[str, Any]:
             if date_match else None
         ),
         "transactionTime": (
-            f"{int(time_match.group(1)):02d}:{time_match.group(2)}"
+            (
+                f"{int(time_match.group(1)):02d}:{time_match.group(2)}"
+                + (f":{int(time_match.group(3)):02d}" if time_match.group(3) else "")
+            )
             if time_match else None
         ),
         "address": address,
