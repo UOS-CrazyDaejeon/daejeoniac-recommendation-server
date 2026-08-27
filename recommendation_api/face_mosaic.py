@@ -212,22 +212,22 @@ def _detect_face_boxes(image: Any, detector: Any) -> list[tuple[int, int, int, i
     return boxes
 
 
-def _pixelate_faces(image: Any, boxes: list[tuple[int, int, int, int]]) -> None:
+def _blur_faces(image: Any, boxes: list[tuple[int, int, int, int]]) -> None:
     import cv2
 
-    block_size = _integer_environment("FACE_MOSAIC_BLOCK_SIZE", 14, 8, 40)
+    # 예시처럼 사각형 블록 없이 자연스럽게 얼굴 전체를 흐리게 한다.
+    # 얼굴의 짧은 변을 기준으로 계산해 가까이 찍힌 얼굴과 작은 얼굴에 모두 대응한다.
+    blur_ratio = _float_environment("FACE_BLUR_SIGMA_RATIO", 0.09, 0.02, 0.20)
     for x1, y1, x2, y2 in boxes:
         face = image[y1:y2, x1:x2]
         height, width = face.shape[:2]
-        small = cv2.resize(
+        sigma = max(1.0, min(width, height) * blur_ratio)
+        image[y1:y2, x1:x2] = cv2.GaussianBlur(
             face,
-            (max(1, width // block_size), max(1, height // block_size)),
-            interpolation=cv2.INTER_AREA,
-        )
-        image[y1:y2, x1:x2] = cv2.resize(
-            small,
-            (width, height),
-            interpolation=cv2.INTER_NEAREST,
+            ksize=(0, 0),
+            sigmaX=sigma,
+            sigmaY=sigma,
+            borderType=cv2.BORDER_REPLICATE,
         )
 
 
@@ -257,7 +257,7 @@ def _mosaic_face_image_bytes(
             "얼굴을 검출하지 못해 원본 이미지를 저장하지 않았습니다."
         )
 
-    _pixelate_faces(image, boxes)
+    _blur_faces(image, boxes)
     try:
         import cv2
 

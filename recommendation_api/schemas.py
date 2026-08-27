@@ -1,13 +1,30 @@
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    model_validator,
+)
+
+
+def _unwrap_spring_page_content(value: Any) -> Any:
+    """Spring Page 응답은 메타데이터를 무시하고 content 배열만 사용한다."""
+    if isinstance(value, dict) and "content" in value:
+        content = value["content"]
+        if not isinstance(content, list):
+            raise ValueError("Spring Page의 content는 배열이어야 합니다")
+        return content
+    return value
 
 
 class Place(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    id: str
-    name: str
+    id: str = Field(validation_alias=AliasChoices("id", "placeId"))
+    name: str = Field(validation_alias=AliasChoices("name", "placeName"))
     latitude: float
     longitude: float
     congestion: float = 50.0
@@ -16,6 +33,43 @@ class Place(BaseModel):
     category: str = "unknown"
     description: str = ""
     tags: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_spring_place(cls, value: Any) -> Any:
+        """Spring Place DTO를 추천 엔진이 사용하는 장소 형태로 보정한다."""
+        if not isinstance(value, dict):
+            return value
+
+        normalized = dict(value)
+        if "id" not in normalized and normalized.get("placeId") is not None:
+            normalized["id"] = str(normalized["placeId"])
+        if "description" not in normalized:
+            normalized["description"] = normalized.get("placeDescription") or ""
+
+        if "category" not in normalized:
+            normalized["category"] = (
+                normalized.get("categorySmall")
+                or normalized.get("categoryMedium")
+                or normalized.get("categoryLarge")
+                or "unknown"
+            )
+
+        if "tags" not in normalized:
+            normalized["tags"] = list(
+                dict.fromkeys(
+                    str(item)
+                    for item in (
+                        normalized.get("categoryLarge"),
+                        normalized.get("categoryMedium"),
+                        normalized.get("categorySmall"),
+                        normalized.get("gu"),
+                        normalized.get("dong"),
+                    )
+                    if item
+                )
+            )
+        return normalized
 
 
 class RecommendationContext(BaseModel):
@@ -30,7 +84,12 @@ class RecommendationContext(BaseModel):
 
 
 RecentPlaces = Annotated[list[Place], Field(max_length=4)]
-Candidates = Annotated[list[Place], Field(min_length=10, max_length=10)]
+# Spring Page 객체({"content": [...]})와 페이징 제거 후의 배열을 모두 받는다.
+Candidates = Annotated[
+    list[Place],
+    BeforeValidator(_unwrap_spring_page_content),
+    Field(min_length=1),
+]
 
 
 class RecommendationRequest(BaseModel):

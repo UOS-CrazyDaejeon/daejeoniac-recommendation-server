@@ -27,8 +27,8 @@ Content-Type: application/json
 `selected_place`가 유사도 비교 기준이다. 장소의 카테고리, 태그, 설명과
 후보별 거리를 사용하며, OpenAI가 활성화되어 있으면 문맥 유사도도 함께
 평가한다. 이 요청에는 최근 이동 이력이나 현재 시각이 필요 없다. 아래
-`candidates` 값은 문서 가독성을 위한 축약 표기이며 실제 요청에는 장소 객체
-10개를 넣어야 한다.
+`candidates`에는 Spring Page 응답 전체를 넣거나, 그 안의 `content` 배열만 넣을 수
+있다. Page 메타데이터는 사용하지 않으며, 페이징을 제거한 뒤에는 배열만 보내면 된다.
 
 ```json
 {
@@ -44,7 +44,9 @@ Content-Type: application/json
     "tags": ["조용한", "로컬", "커피"]
   },
   "visited_place_ids": [],
-  "candidates": ["Spring에서 조회한 장소 객체 정확히 10개"],
+  "candidates": {
+    "content": ["Spring에서 조회한 장소 객체 목록"]
+  },
   "context": {
     "radius_m": 1000,
     "top_k": 5
@@ -64,8 +66,8 @@ Content-Type: application/json
 
 `current_place`, 최근 선택 장소인 `recent_places`, 시간·날씨 문맥을 사용해
 다음 이동 장소를 계산한다. 응답에는 `next_places`와 `recommendation_log`만
-포함되고 `similar_places`는 계산하지 않는다. 아래 `candidates`도 실제
-요청에서는 장소 객체 10개로 바꿔야 한다.
+포함되고 `similar_places`는 계산하지 않는다. `candidates`는 Spring Page 객체
+또는 그 `content` 배열을 그대로 사용할 수 있다.
 
 ```json
 {
@@ -79,7 +81,9 @@ Content-Type: application/json
   },
   "recent_places": [],
   "visited_place_ids": [],
-  "candidates": ["Spring에서 조회한 장소 객체 정확히 10개"],
+  "candidates": {
+    "content": ["Spring에서 조회한 장소 객체 목록"]
+  },
   "context": {
     "current_time": "2026-08-15T14:00:00+09:00",
     "weather": "맑음",
@@ -106,7 +110,7 @@ Content-Type: application/json
 | `current_place` | 현재 장소와 위도·경도 |
 | `recent_places` | 최근 선택 장소 0~4개 |
 | `visited_place_ids` | 이미 방문한 장소 ID 목록 |
-| `candidates` | MySQL에서 조회한 후보 정확히 10개 |
+| `candidates` | MySQL에서 조회한 후보 배열 또는 Spring Page 객체의 `content` |
 | `context.radius_m` | 0보다 크고 1000 이하 |
 | `context.similar_top_k` | 5 |
 | `context.next_top_k` | 5 |
@@ -408,6 +412,9 @@ aws.s3.mosaic-prefix=mosaics/
 # t3.small 권장값
 MAX_FACE_IMAGE_BYTES=10485760
 FACE_MAX_IMAGE_PIXELS=24000000
+# 기본값 0.09: 얼굴 크기에 비례한 자연스러운 가우시안 블러.
+# 0.06이면 더 약하게, 0.12 이상이면 더 강하게 흐려진다.
+FACE_BLUR_SIGMA_RATIO=0.09
 FACE_OUTPUT_MAX_EDGE=2560
 FACE_DETECTION_MAX_EDGE=1280
 FACE_DETECTION_SCORE_THRESHOLD=0.75

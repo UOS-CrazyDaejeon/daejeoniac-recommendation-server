@@ -1551,8 +1551,8 @@ def _validate_spring_request(request: dict[str, Any]) -> None:
         raise ValueError(f"추천 요청 필드가 누락되었습니다: {sorted(missing)}")
 
     candidates = request["candidates"]
-    if not isinstance(candidates, list) or len(candidates) != 10:
-        raise ValueError("candidates는 정확히 10개여야 합니다")
+    if not isinstance(candidates, list) or not candidates:
+        raise ValueError("candidates는 한 개 이상의 장소 배열이어야 합니다")
     candidate_ids = [str(candidate.get("id", "")) for candidate in candidates]
     if "" in candidate_ids or len(set(candidate_ids)) != len(candidate_ids):
         raise ValueError("candidate id는 비어 있지 않고 중복되지 않아야 합니다")
@@ -1784,8 +1784,8 @@ def _validate_split_recommendation_request(
         raise ValueError(f"추천 요청 필드가 누락되었습니다: {sorted(missing)}")
 
     candidates = request["candidates"]
-    if not isinstance(candidates, list) or len(candidates) != 10:
-        raise ValueError("candidates는 정확히 10개여야 합니다")
+    if not isinstance(candidates, list) or not candidates:
+        raise ValueError("candidates는 한 개 이상의 장소 배열이어야 합니다")
     candidate_ids = [str(candidate.get("id", "")) for candidate in candidates]
     if "" in candidate_ids or len(set(candidate_ids)) != len(candidate_ids):
         raise ValueError("candidate id는 비어 있지 않고 중복되지 않아야 합니다")

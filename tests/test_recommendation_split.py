@@ -205,6 +205,71 @@ class SplitRecommendationApiTest(unittest.TestCase):
         self.assertIn("next_places", response.json())
         self.assertNotIn("similar_places", response.json())
 
+    def test_accepts_spring_page_candidates_and_uses_content_only(self):
+        captured = {}
+
+        def processor(request):
+            captured.update(request)
+            return {
+                "request_id": request["request_id"],
+                "session_id": request["session_id"],
+                "generated_at": "2026-08-15T14:00:00+09:00",
+                "selected_place_id": request["selected_place"]["id"],
+                "similar_places": [{"rank": 1, "place_id": "8"}],
+            }
+
+        request = similar_request()
+        request["candidates"] = {
+            "content": [
+                {
+                    "placeId": 8,
+                    "placeName": "대전오월드 주랜드",
+                    "placeDescription": None,
+                    "placeAddress": "대전 중구 사정동 100",
+                    "latitude": 36.2890919504445,
+                    "longitude": 127.400486744411,
+                    "gu": "중구",
+                    "dong": "사정동",
+                    "categoryLarge": "여행",
+                    "categoryMedium": "관광,명소",
+                    "categorySmall": "동물원",
+                },
+                {
+                    "placeId": 24,
+                    "placeName": "뿌리공원",
+                    "placeDescription": "전국 유일의 ‘효’ 테마공원",
+                    "placeAddress": "대전 중구 뿌리공원로 79",
+                    "latitude": 36.28538,
+                    "longitude": 127.3883,
+                    "gu": "중구",
+                    "dong": "뿌리공원로",
+                    "categoryLarge": "관광지",
+                    "categoryMedium": None,
+                    "categorySmall": None,
+                },
+            ],
+            "number": 0,
+            "size": 10,
+            "totalElements": 2,
+        }
+
+        app.dependency_overrides[get_similar_places_processor] = lambda: processor
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/v1/recommendations/similar-places",
+                json=request,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(captured["candidates"]), 2)
+        self.assertEqual(captured["candidates"][0]["id"], "8")
+        self.assertEqual(captured["candidates"][0]["name"], "대전오월드 주랜드")
+        self.assertEqual(captured["candidates"][0]["category"], "동물원")
+        self.assertEqual(
+            captured["candidates"][0]["tags"],
+            ["여행", "관광,명소", "동물원", "중구", "사정동"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
