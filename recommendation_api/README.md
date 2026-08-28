@@ -9,6 +9,9 @@ Spring이 MySQL에서 조회한 장소 후보와 최근 선택 이력을 받아 
 
 ### 추천 API 구분
 
+두 API의 추천 장소 항목은 Spring 요청에서 받은 `categoryLarge`,
+`categoryMedium`, `categorySmall`을 반환한다.
+
 | 목적 | 엔드포인트 | 실제 계산 결과 |
 | --- | --- | --- |
 | 선택 장소와 비슷한 장소 | `POST /api/v1/recommendations/similar-places` | `similar_places` 5개 |
@@ -24,38 +27,33 @@ POST /api/v1/recommendations/similar-places
 Content-Type: application/json
 ```
 
-`selected_place`가 유사도 비교 기준이다. 장소의 카테고리, 태그, 설명과
-후보별 거리를 사용하며, OpenAI가 활성화되어 있으면 문맥 유사도도 함께
-평가한다. 이 요청에는 최근 이동 이력이나 현재 시각이 필요 없다. 아래
-`candidates`에는 Spring Page 응답 전체를 넣거나, 그 안의 `content` 배열만 넣을 수
-있다. Page 메타데이터는 사용하지 않으며, 페이징을 제거한 뒤에는 배열만 보내면 된다.
+`selectedPlace`가 유사도 비교 기준이고 `nearbyPlaces`가 비교 후보 목록이다.
+장소의 카테고리, 태그, 설명과 후보별 거리를 사용하며, OpenAI가 활성화되어 있으면
+문맥 유사도도 함께 평가한다. 이 요청에는 최근 이동 이력이나 현재 시각이 필요 없다.
+`nearbyPlaces`에는 배열 또는 Spring Page 응답 전체를 넣을 수 있으며, Page의 경우
+`content` 외의 메타데이터는 무시한다.
 
 ```json
 {
-  "request_id": "similar-001",
-  "session_id": "session-001",
-  "selected_place": {
-    "id": "place-100",
-    "name": "선택한 카페",
+  "selectedPlace": {
+    "placeId": 1,
+    "placeName": "성심당 본점",
     "latitude": 36.35,
     "longitude": 127.38,
-    "category": "cafe",
-    "description": "조용한 로컬 카페",
-    "tags": ["조용한", "로컬", "커피"]
+    "categorySmall": "베이커리",
+    "congestionRate": 72.5,
+    "visitorCount": 1320,
+    "tag": "빵,디저트,대전"
   },
-  "visited_place_ids": [],
-  "candidates": {
-    "content": ["Spring에서 조회한 장소 객체 목록"]
-  },
-  "context": {
-    "radius_m": 1000,
-    "top_k": 5
-  }
+  "nearbyPlaces": ["Spring에서 조회한 인근 장소 객체 목록"]
 }
 ```
 
-응답에는 `selected_place_id`와 `similar_places`만 포함되고 `next_places`는
-계산하거나 반환하지 않는다.
+`requestId`, `sessionId`, `visitedPlaceIds`, `radiusM`은 선택 필드다. `radiusM`의
+기본값은 1000m이며, `tag`가 쉼표로 구분된 문자열이면 추천용 태그 배열로 변환한다.
+
+응답에는 `generated_at`, `selected_place_id`, `similar_places`만 포함되고
+`request_id`, `session_id`, `next_places`는 반환하지 않는다.
 
 ### 다음 장소 추천
 
@@ -64,35 +62,28 @@ POST /api/v1/recommendations/next-places
 Content-Type: application/json
 ```
 
-`current_place`, 최근 선택 장소인 `recent_places`, 시간·날씨 문맥을 사용해
-다음 이동 장소를 계산한다. 응답에는 `next_places`와 `recommendation_log`만
-포함되고 `similar_places`는 계산하지 않는다. `candidates`는 Spring Page 객체
-또는 그 `content` 배열을 그대로 사용할 수 있다.
+`selectedPlace`를 현재 장소로, `nearbyPlaces`를 추천 후보로,
+`visitedPlaces`를 최근 이동 이력과 방문 제외 목록으로 사용해 다음 이동 장소를
+계산한다. `visitedAt`이 있는 방문 장소는 시각순으로 정렬한 뒤 최근 4개를 이동
+흐름 계산에 사용한다. 응답에는 `generated_at`, `current_place_id`,
+`visited_place_ids`, `next_places`만 포함된다.
 
 ```json
 {
-  "request_id": "next-001",
-  "session_id": "session-001",
-  "current_place": {
-    "id": "place-100",
-    "name": "현재 장소",
+  "selectedPlace": {
+    "placeId": 1,
+    "placeName": "성심당 본점",
     "latitude": 36.35,
-    "longitude": 127.38
+    "longitude": 127.38,
+    "tag": "빵,디저트,대전"
   },
-  "recent_places": [],
-  "visited_place_ids": [],
-  "candidates": {
-    "content": ["Spring에서 조회한 장소 객체 목록"]
-  },
-  "context": {
-    "current_time": "2026-08-15T14:00:00+09:00",
-    "weather": "맑음",
-    "user_preferences": "조용한 장소",
-    "radius_m": 1000,
-    "top_k": 5
-  }
+  "nearbyPlaces": ["Spring에서 조회한 인근 장소 객체 목록"],
+  "visitedPlaces": ["사용자가 방문한 장소 객체 목록"]
 }
 ```
+
+`currentTime`, `weather`, `userPreferences`, `radiusM`, `requestId`, `sessionId`은
+선택 필드다. `currentTime`이 없으면 Python 서버의 현재 시각을 기준으로 추천한다.
 
 ### 기존 통합 추천 요청(deprecated)
 

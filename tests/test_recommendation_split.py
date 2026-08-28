@@ -33,6 +33,9 @@ def place(
         "monthly_visitors": 12000,
         "selected_count": 80,
         "category": category,
+        "categoryLarge": "관광",
+        "categoryMedium": category,
+        "categorySmall": f"{category}-소분류",
         "description": f"조용한 {name}",
         "tags": ["조용한", "로컬", category],
     }
@@ -126,6 +129,12 @@ class SplitRecommendationProcessorTest(unittest.TestCase):
             response["similar_places"][0]["similarity_source"],
             "test_similarity",
         )
+        self.assertEqual(response["similar_places"][0]["categoryLarge"], "관광")
+        self.assertEqual(response["similar_places"][0]["categoryMedium"], "cafe")
+        self.assertEqual(
+            response["similar_places"][0]["categorySmall"], "cafe-소분류"
+        )
+        self.assertNotIn("category", response["similar_places"][0])
 
     def test_next_processor_only_returns_next_places(self):
         response = process_spring_next_places_request(
@@ -134,12 +143,19 @@ class SplitRecommendationProcessorTest(unittest.TestCase):
         )
 
         self.assertEqual(response["current_place_id"], "selected")
+        self.assertEqual(response["visited_place_ids"], ["recent"])
         self.assertEqual(len(response["next_places"]), 5)
         self.assertNotIn("similar_places", response)
         self.assertEqual(
             response["next_places"][0]["transition_source"],
             "test_transition",
         )
+        self.assertEqual(response["next_places"][0]["categoryLarge"], "관광")
+        self.assertEqual(response["next_places"][0]["categoryMedium"], "cafe")
+        self.assertEqual(
+            response["next_places"][0]["categorySmall"], "cafe-소분류"
+        )
+        self.assertNotIn("category", response["next_places"][0])
 
     def test_legacy_combined_processor_still_returns_both_results(self):
         request = next_request()
@@ -183,6 +199,75 @@ class SplitRecommendationApiTest(unittest.TestCase):
         self.assertIn("similar_places", response.json())
         self.assertNotIn("next_places", response.json())
 
+    def test_similar_places_accepts_selected_place_and_nearby_places_dto(self):
+        captured = {}
+
+        def processor(request):
+            captured.update(request)
+            return {
+                "request_id": request["request_id"],
+                "session_id": request["session_id"],
+                "generated_at": "2026-08-28T12:00:00+09:00",
+                "selected_place_id": request["selected_place"]["id"],
+                "similar_places": [{"rank": 1, "place_id": "2"}],
+            }
+
+        request = {
+            "selectedPlace": {
+                "placeId": 1,
+                "placeName": "성심당 본점",
+                "placeDescription": "대전 대표 베이커리",
+                "placeAddress": "대전광역시 중구 대종로480번길 15",
+                "latitude": 36.3275,
+                "longitude": 127.4272,
+                "gu": "중구",
+                "dong": "은행동",
+                "categoryLarge": "음식",
+                "categoryMedium": "카페/디저트",
+                "categorySmall": "베이커리",
+                "congestionRate": 72.5,
+                "visitorCount": 1320,
+                "visitedAt": None,
+                "description": "대표 빵집",
+                "tag": "빵,디저트,대전",
+            },
+            "nearbyPlaces": [
+                {
+                    "placeId": 2,
+                    "placeName": "중앙로 지하상가",
+                    "placeDescription": "대전 원도심 쇼핑 공간",
+                    "placeAddress": "대전광역시 중구 중앙로",
+                    "latitude": 36.3281,
+                    "longitude": 127.4265,
+                    "gu": "중구",
+                    "dong": "은행동",
+                    "categoryLarge": "쇼핑",
+                    "categoryMedium": "상가",
+                    "categorySmall": "지하상가",
+                    "congestionRate": 61.0,
+                    "visitorCount": 980,
+                    "visitedAt": None,
+                    "description": "원도심 쇼핑",
+                    "tag": "쇼핑,원도심,대전",
+                }
+            ],
+        }
+
+        app.dependency_overrides[get_similar_places_processor] = lambda: processor
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/v1/recommendations/similar-places",
+                json=request,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(captured["selected_place"]["id"], "1")
+        self.assertEqual(captured["selected_place"]["congestion"], 72.5)
+        self.assertEqual(captured["selected_place"]["monthly_visitors"], 1320)
+        self.assertEqual(captured["selected_place"]["tags"], ["빵", "디저트", "대전"])
+        self.assertEqual(captured["candidates"][0]["id"], "2")
+        self.assertEqual(captured["candidates"][0]["tags"], ["쇼핑", "원도심", "대전"])
+
     def test_next_places_endpoint_has_separate_response(self):
         def processor(request):
             return {
@@ -190,6 +275,7 @@ class SplitRecommendationApiTest(unittest.TestCase):
                 "session_id": request["session_id"],
                 "generated_at": "2026-08-15T14:00:00+09:00",
                 "current_place_id": request["current_place"]["id"],
+                "visited_place_ids": request["visited_place_ids"],
                 "next_places": [{"rank": 1, "place_id": "candidate-1"}],
                 "recommendation_log": {"items": []},
             }
@@ -204,6 +290,75 @@ class SplitRecommendationApiTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("next_places", response.json())
         self.assertNotIn("similar_places", response.json())
+        self.assertNotIn("recommendation_log", response.json())
+
+    def test_next_places_accepts_selected_nearby_and_visited_places_dto(self):
+        captured = {}
+
+        def processor(request):
+            captured.update(request)
+            return {
+                "request_id": request["request_id"],
+                "session_id": request["session_id"],
+                "generated_at": "2026-08-28T12:00:00+09:00",
+                "current_place_id": request["current_place"]["id"],
+                "visited_place_ids": request["visited_place_ids"],
+                "next_places": [{"rank": 1, "place_id": "2"}],
+                "recommendation_log": {"items": []},
+            }
+
+        request = {
+            "selectedPlace": {
+                "placeId": 1,
+                "placeName": "성심당 본점",
+                "placeDescription": "대전 대표 베이커리",
+                "latitude": 36.3275,
+                "longitude": 127.4272,
+                "categorySmall": "베이커리",
+                "congestionRate": 72.5,
+                "visitorCount": 1320,
+                "tag": "빵,디저트,대전",
+            },
+            "nearbyPlaces": [
+                {
+                    "placeId": 2,
+                    "placeName": "중앙로 지하상가",
+                    "placeDescription": "대전 원도심 쇼핑 공간",
+                    "latitude": 36.3281,
+                    "longitude": 127.4265,
+                    "categorySmall": "지하상가",
+                    "congestionRate": 61.0,
+                    "visitorCount": 980,
+                    "tag": "쇼핑,원도심,대전",
+                }
+            ],
+            "visitedPlaces": [
+                {
+                    "placeId": 10,
+                    "placeName": "한밭수목원",
+                    "placeDescription": "도심 속 대형 수목원",
+                    "latitude": 36.3662,
+                    "longitude": 127.3882,
+                    "categorySmall": "수목원",
+                    "visitedAt": "2026-08-28T14:30:00",
+                    "tag": "자연,산책,대전",
+                }
+            ],
+        }
+
+        app.dependency_overrides[get_next_places_processor] = lambda: processor
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/v1/recommendations/next-places",
+                json=request,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(captured["current_place"]["id"], "1")
+        self.assertEqual(captured["candidates"][0]["id"], "2")
+        self.assertEqual(captured["visited_place_ids"], ["10"])
+        self.assertEqual(captured["recent_places"][0]["id"], "10")
+        self.assertTrue(captured["context"]["current_time"])
 
     def test_accepts_spring_page_candidates_and_uses_content_only(self):
         captured = {}

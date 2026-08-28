@@ -1,4 +1,6 @@
+from datetime import datetime
 from typing import Annotated, Any, Literal
+from zoneinfo import ZoneInfo
 
 from pydantic import (
     AliasChoices,
@@ -44,6 +46,10 @@ class Place(BaseModel):
         normalized = dict(value)
         if "id" not in normalized and normalized.get("placeId") is not None:
             normalized["id"] = str(normalized["placeId"])
+        if "congestion" not in normalized and normalized.get("congestionRate") is not None:
+            normalized["congestion"] = normalized["congestionRate"]
+        if "monthly_visitors" not in normalized and normalized.get("visitorCount") is not None:
+            normalized["monthly_visitors"] = normalized["visitorCount"]
         if "description" not in normalized:
             normalized["description"] = normalized.get("placeDescription") or ""
 
@@ -56,19 +62,27 @@ class Place(BaseModel):
             )
 
         if "tags" not in normalized:
-            normalized["tags"] = list(
-                dict.fromkeys(
-                    str(item)
-                    for item in (
-                        normalized.get("categoryLarge"),
-                        normalized.get("categoryMedium"),
-                        normalized.get("categorySmall"),
-                        normalized.get("gu"),
-                        normalized.get("dong"),
+            raw_tag = normalized.get("tag")
+            if isinstance(raw_tag, str):
+                normalized["tags"] = [
+                    tag.strip() for tag in raw_tag.split(",") if tag.strip()
+                ]
+            elif isinstance(raw_tag, list):
+                normalized["tags"] = [str(tag).strip() for tag in raw_tag if str(tag).strip()]
+            else:
+                normalized["tags"] = list(
+                    dict.fromkeys(
+                        str(item)
+                        for item in (
+                            normalized.get("categoryLarge"),
+                            normalized.get("categoryMedium"),
+                            normalized.get("categorySmall"),
+                            normalized.get("gu"),
+                            normalized.get("dong"),
+                        )
+                        if item
                     )
-                    if item
                 )
-            )
         return normalized
 
 
@@ -124,17 +138,56 @@ class SimilarPlacesContext(BaseModel):
 class SimilarPlacesRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    request_id: str
-    session_id: str
-    selected_place: Place
-    visited_place_ids: list[str] = Field(default_factory=list)
-    candidates: Candidates
-    context: SimilarPlacesContext
+    requestId: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("requestId", "request_id"),
+        description="요청 추적 ID(생략 시 선택 장소 ID로 생성)",
+    )
+    sessionId: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("sessionId", "session_id"),
+        description="사용자 세션 ID(선택)",
+    )
+    selectedPlace: Place = Field(
+        validation_alias=AliasChoices("selectedPlace", "selected_place"),
+        description="사용자가 선택한 기준 장소",
+    )
+    nearbyPlaces: Candidates = Field(
+        validation_alias=AliasChoices("nearbyPlaces", "candidates"),
+        description="Spring이 조회한 인근 장소 목록 또는 Page 객체",
+    )
+    visitedPlaceIds: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("visitedPlaceIds", "visited_place_ids"),
+    )
+    radiusM: float = Field(default=1000, gt=0, le=1000, description="후보 반경(m)")
+
+    @model_validator(mode="before")
+    @classmethod
+    def adapt_legacy_request(cls, value: Any) -> Any:
+        """기존 snake_case 계약도 새 Spring DTO 계약으로 변환한다."""
+        if not isinstance(value, dict):
+            return value
+        normalized = dict(value)
+        legacy_context = normalized.pop("context", None)
+        if isinstance(legacy_context, dict) and "radiusM" not in normalized:
+            normalized["radiusM"] = legacy_context.get("radius_m", 1000)
+        return normalized
+
+    def to_processor_request(self) -> dict[str, Any]:
+        request_id = self.requestId or f"similar-{self.selectedPlace.id}"
+        session_id = self.sessionId or f"similar-{self.selectedPlace.id}"
+        return {
+            "request_id": request_id,
+            "session_id": session_id,
+            "selected_place": self.selectedPlace.model_dump(mode="json"),
+            "visited_place_ids": self.visitedPlaceIds,
+            "candidates": [place.model_dump(mode="json") for place in self.nearbyPlaces],
+            "context": {"radius_m": self.radiusM, "top_k": 5},
+        }
 
 
 class SimilarPlacesResponse(BaseModel):
-    request_id: str
-    session_id: str
     generated_at: str
     selected_place_id: str
     similar_places: list[dict[str, Any]]
@@ -153,22 +206,93 @@ class NextPlacesContext(BaseModel):
 class NextPlacesRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    request_id: str
-    session_id: str
-    current_place: Place
-    recent_places: RecentPlaces
-    visited_place_ids: list[str] = Field(default_factory=list)
-    candidates: Candidates
-    context: NextPlacesContext
+    requestId: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("requestId", "request_id"),
+        description="요청 추적 ID(생략 시 선택 장소 ID로 생성)",
+    )
+    sessionId: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("sessionId", "session_id"),
+        description="사용자 세션 ID(선택)",
+    )
+    selectedPlace: Place = Field(
+        validation_alias=AliasChoices("selectedPlace", "currentPlace", "current_place"),
+        description="사용자가 현재 선택한 장소",
+    )
+    nearbyPlaces: Candidates = Field(
+        validation_alias=AliasChoices("nearbyPlaces", "candidates"),
+        description="Spring이 조회한 인근 장소 목록 또는 Page 객체",
+    )
+    visitedPlaces: list[Place] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("visitedPlaces", "recent_places"),
+        description="사용자가 방문한 장소 목록",
+    )
+    visitedPlaceIds: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("visitedPlaceIds", "visited_place_ids"),
+    )
+    currentTime: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("currentTime", "current_time"),
+        description="추천 기준 시각(생략 시 현재 시각)",
+    )
+    weather: str | None = None
+    userPreferences: str = Field(
+        default="",
+        validation_alias=AliasChoices("userPreferences", "user_preferences"),
+    )
+    radiusM: float = Field(default=1000, gt=0, le=1000, description="후보 반경(m)")
+
+    @model_validator(mode="before")
+    @classmethod
+    def adapt_legacy_request(cls, value: Any) -> Any:
+        """기존 snake_case 계약도 새 Spring DTO 계약으로 변환한다."""
+        if not isinstance(value, dict):
+            return value
+        normalized = dict(value)
+        legacy_context = normalized.pop("context", None)
+        if isinstance(legacy_context, dict):
+            normalized.setdefault("currentTime", legacy_context.get("current_time"))
+            normalized.setdefault("weather", legacy_context.get("weather"))
+            normalized.setdefault("userPreferences", legacy_context.get("user_preferences", ""))
+            normalized.setdefault("radiusM", legacy_context.get("radius_m", 1000))
+        return normalized
+
+    def to_processor_request(self) -> dict[str, Any]:
+        request_id = self.requestId or f"next-{self.selectedPlace.id}"
+        session_id = self.sessionId or f"next-{self.selectedPlace.id}"
+        visited_rows = [place.model_dump(mode="json") for place in self.visitedPlaces]
+        visited_rows.sort(key=lambda place: str(place.get("visitedAt") or ""))
+        visited_ids = list(
+            dict.fromkeys(
+                [*self.visitedPlaceIds, *(str(place["id"]) for place in visited_rows)]
+            )
+        )
+        return {
+            "request_id": request_id,
+            "session_id": session_id,
+            "current_place": self.selectedPlace.model_dump(mode="json"),
+            "recent_places": visited_rows[-4:],
+            "visited_place_ids": visited_ids,
+            "candidates": [place.model_dump(mode="json") for place in self.nearbyPlaces],
+            "context": {
+                "current_time": self.currentTime
+                or datetime.now(ZoneInfo("Asia/Seoul")).isoformat(),
+                "weather": self.weather,
+                "user_preferences": self.userPreferences,
+                "radius_m": self.radiusM,
+                "top_k": 5,
+            },
+        }
 
 
 class NextPlacesResponse(BaseModel):
-    request_id: str
-    session_id: str
     generated_at: str
     current_place_id: str
+    visited_place_ids: list[str]
     next_places: list[dict[str, Any]]
-    recommendation_log: dict[str, Any]
 
 
 class ReceiptItem(BaseModel):

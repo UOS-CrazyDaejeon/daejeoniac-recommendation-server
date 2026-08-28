@@ -296,24 +296,24 @@ def create_similar_place_recommendations(
     processor: RecommendationProcessor = Depends(get_similar_places_processor),
 ) -> dict[str, Any] | JSONResponse:
     try:
-        return processor(request.model_dump(mode="json"))
+        return processor(request.to_processor_request())
     except ValueError as exc:
         return _error_response(
             status_code=400,
             code="INVALID_SIMILAR_PLACES_REQUEST",
             message=str(exc),
-            request_id=request.request_id,
+            request_id=request.requestId,
         )
     except Exception:
         logger.exception(
             "Unexpected similar-place failure request_id=%s",
-            request.request_id,
+            request.requestId,
         )
         return _error_response(
             status_code=500,
             code="INTERNAL_SERVER_ERROR",
             message="비슷한 장소 추천 처리 중 오류가 발생했습니다",
-            request_id=request.request_id,
+            request_id=request.requestId,
         )
 
 
@@ -334,24 +334,24 @@ def create_next_place_recommendations(
     processor: RecommendationProcessor = Depends(get_next_places_processor),
 ) -> dict[str, Any] | JSONResponse:
     try:
-        return processor(request.model_dump(mode="json"))
+        return processor(request.to_processor_request())
     except ValueError as exc:
         return _error_response(
             status_code=400,
             code="INVALID_NEXT_PLACES_REQUEST",
             message=str(exc),
-            request_id=request.request_id,
+            request_id=request.requestId,
         )
     except Exception:
         logger.exception(
             "Unexpected next-place failure request_id=%s",
-            request.request_id,
+            request.requestId,
         )
         return _error_response(
             status_code=500,
             code="INTERNAL_SERVER_ERROR",
             message="다음 장소 추천 처리 중 오류가 발생했습니다",
-            request_id=request.request_id,
+            request_id=request.requestId,
         )
 
 

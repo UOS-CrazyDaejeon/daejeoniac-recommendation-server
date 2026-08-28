@@ -291,6 +291,9 @@ def build_graph(
             monthly_visitors=int(place["monthly_visitors"]),
             selected_count=int(place.get("selected_count", 0)),
             category=str(place.get("category", "unknown")),
+            categoryLarge=place.get("categoryLarge"),
+            categoryMedium=place.get("categoryMedium"),
+            categorySmall=place.get("categorySmall"),
             description=str(place.get("description", place["name"])),
             tags=list(place.get("tags", [str(place.get("category", "unknown"))])),
             distance_m=place.get("distance_m"),
@@ -1231,6 +1234,9 @@ def preselect_candidates(
                 "place_id": node_id,
                 "name": attrs["name"],
                 "category": attrs.get("category", "unknown"),
+                "categoryLarge": attrs.get("categoryLarge"),
+                "categoryMedium": attrs.get("categoryMedium"),
+                "categorySmall": attrs.get("categorySmall"),
                 "description": attrs.get("description", attrs["name"]),
                 "tags": list(attrs.get("tags", [])),
                 "distance_m": round(static_scores[node_id]["distance_m"], 1),
@@ -1424,7 +1430,9 @@ def recommend_next_places_hybrid(
             {
                 "place_id": node_id,
                 "name": attrs["name"],
-                "category": attrs.get("category", "unknown"),
+                "categoryLarge": attrs.get("categoryLarge"),
+                "categoryMedium": attrs.get("categoryMedium"),
+                "categorySmall": attrs.get("categorySmall"),
                 "description": attrs.get("description", attrs["name"]),
                 "tags": list(attrs.get("tags", [])),
                 "final_score": round(final_score, 6),
@@ -1591,6 +1599,9 @@ def _to_graph_place(
         "monthly_visitors": int(place.get("monthly_visitors", 0)),
         "selected_count": int(place.get("selected_count", 0)),
         "category": str(place.get("category", "unknown")),
+        "categoryLarge": place.get("categoryLarge"),
+        "categoryMedium": place.get("categoryMedium"),
+        "categorySmall": place.get("categorySmall"),
         "description": _one_line_text(
             place.get("description", place.get("name", ""))
         ),
@@ -1670,7 +1681,9 @@ def recommend_similar_places(
             {
                 "place_id": place_id,
                 "name": str(candidate["name"]),
-                "category": str(candidate.get("category", "unknown")),
+                "categoryLarge": candidate.get("categoryLarge"),
+                "categoryMedium": candidate.get("categoryMedium"),
+                "categorySmall": candidate.get("categorySmall"),
                 "description": _one_line_text(
                     candidate.get("description", candidate["name"])
                 ),
@@ -1735,7 +1748,9 @@ def recommend_similar_places_with_scorer(
             {
                 "place_id": place_id,
                 "name": str(candidate["name"]),
-                "category": str(candidate.get("category", "unknown")),
+                "categoryLarge": candidate.get("categoryLarge"),
+                "categoryMedium": candidate.get("categoryMedium"),
+                "categorySmall": candidate.get("categorySmall"),
                 "description": _one_line_text(
                     candidate.get("description", candidate["name"])
                 ),
@@ -1865,8 +1880,6 @@ def process_spring_similar_places_request(
         top_k=SIMILAR_TOP_K,
     )
     return {
-        "request_id": str(request["request_id"]),
-        "session_id": str(request["session_id"]),
         "generated_at": datetime.now().astimezone().isoformat(),
         "selected_place_id": str(selected_place["id"]),
         "similar_places": similar_places,
@@ -1950,10 +1963,9 @@ def process_spring_next_places_request(
         session_id=str(request["session_id"]),
     )
     return {
-        "request_id": str(request["request_id"]),
-        "session_id": str(request["session_id"]),
         "generated_at": datetime.now().astimezone().isoformat(),
         "current_place_id": str(current_place["id"]),
+        "visited_place_ids": [str(place_id) for place_id in request["visited_place_ids"]],
         "next_places": next_places,
         "recommendation_log": recommendation_log,
     }
