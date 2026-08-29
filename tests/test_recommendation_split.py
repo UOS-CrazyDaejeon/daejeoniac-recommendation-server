@@ -3,6 +3,8 @@ import unittest
 from fastapi.testclient import TestClient
 
 from recommend_llm import (
+    HeuristicSimilarityScorer,
+    OpenAISimilarityScorer,
     SimilarityScore,
     TransitionScore,
     process_spring_next_places_request,
@@ -86,6 +88,14 @@ class DeterministicTransitionScorer:
         }
 
 
+class EmptySimilarityResponseClient:
+    class responses:
+        @staticmethod
+        def create(**kwargs):
+            del kwargs
+            return type("Response", (), {"output_text": '{"scores": []}'})()
+
+
 def similar_request() -> dict:
     return {
         "request_id": "similar-001",
@@ -116,6 +126,22 @@ def next_request() -> dict:
 
 
 class SplitRecommendationProcessorTest(unittest.TestCase):
+    def test_heuristic_similarity_scores_keep_internal_string_keys(self):
+        scores = HeuristicSimilarityScorer().score_candidates(
+            SELECTED_PLACE,
+            candidates()[:1],
+        )
+
+        self.assertEqual(set(scores), {"1"})
+
+    def test_openai_similarity_falls_back_without_id_type_error(self):
+        scores = OpenAISimilarityScorer(
+            client=EmptySimilarityResponseClient(),
+        ).score_candidates(SELECTED_PLACE, candidates()[:1])
+
+        self.assertEqual(set(scores), {"1"})
+        self.assertEqual(scores["1"].source, "heuristic_fallback")
+
     def test_similar_processor_only_returns_similar_places(self):
         response = process_spring_similar_places_request(
             similar_request(),

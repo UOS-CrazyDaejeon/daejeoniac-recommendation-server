@@ -888,11 +888,14 @@ class HeuristicSimilarityScorer:
             top_k=len(candidates),
         )
         return {
-            row["place_id"]: SimilarityScore(
+            str(row["place_id"]): SimilarityScore(
                 score=row["similarity_score"],
                 reason="카테고리, 태그, 설명, 거리를 코드로 비교",
                 source="heuristic",
-                tag_cosine_score=tag_cosine_scores.get(row["place_id"], 0.0),
+                tag_cosine_score=tag_cosine_scores.get(
+                    str(row["place_id"]),
+                    0.0,
+                ),
             )
             for row in rows
         }
