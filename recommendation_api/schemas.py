@@ -25,8 +25,12 @@ def _unwrap_spring_page_content(value: Any) -> Any:
 class Place(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    id: str = Field(validation_alias=AliasChoices("id", "placeId"))
-    name: str = Field(validation_alias=AliasChoices("name", "placeName"))
+    id: int = Field(
+        validation_alias=AliasChoices("place_id", "placeId", "id")
+    )
+    name: str = Field(
+        validation_alias=AliasChoices("place_name", "placeName", "name")
+    )
     latitude: float
     longitude: float
     congestion: float = 50.0
@@ -44,20 +48,48 @@ class Place(BaseModel):
             return value
 
         normalized = dict(value)
-        if "id" not in normalized and normalized.get("placeId") is not None:
-            normalized["id"] = str(normalized["placeId"])
-        if "congestion" not in normalized and normalized.get("congestionRate") is not None:
-            normalized["congestion"] = normalized["congestionRate"]
-        if "monthly_visitors" not in normalized and normalized.get("visitorCount") is not None:
-            normalized["monthly_visitors"] = normalized["visitorCount"]
+        if "id" not in normalized:
+            raw_id = normalized.get("place_id", normalized.get("placeId"))
+            if raw_id is not None:
+                normalized["id"] = int(raw_id)
+        if "name" not in normalized:
+            normalized["name"] = normalized.get(
+                "place_name", normalized.get("placeName")
+            )
+        if "congestion" not in normalized:
+            raw_congestion = normalized.get(
+                "congestion_rate", normalized.get("congestionRate")
+            )
+            if raw_congestion is not None:
+                normalized["congestion"] = raw_congestion
+        if "monthly_visitors" not in normalized:
+            raw_visitor_count = normalized.get(
+                "visitor_count", normalized.get("visitorCount")
+            )
+            if raw_visitor_count is not None:
+                normalized["monthly_visitors"] = raw_visitor_count
+        if "selected_count" not in normalized and normalized.get("selectedCount") is not None:
+            normalized["selected_count"] = normalized["selectedCount"]
         if "description" not in normalized:
             normalized["description"] = normalized.get("placeDescription") or ""
+
+        for camel_name, snake_name in (
+            ("categoryLarge", "category_large"),
+            ("categoryMedium", "category_medium"),
+            ("categorySmall", "category_small"),
+            ("visitedAt", "visited_at"),
+        ):
+            if camel_name not in normalized and normalized.get(snake_name) is not None:
+                normalized[camel_name] = normalized[snake_name]
 
         if "category" not in normalized:
             normalized["category"] = (
                 normalized.get("categorySmall")
+                or normalized.get("category_small")
                 or normalized.get("categoryMedium")
+                or normalized.get("category_medium")
                 or normalized.get("categoryLarge")
+                or normalized.get("category_large")
                 or "unknown"
             )
 
@@ -74,9 +106,12 @@ class Place(BaseModel):
                     dict.fromkeys(
                         str(item)
                         for item in (
-                            normalized.get("categoryLarge"),
-                            normalized.get("categoryMedium"),
-                            normalized.get("categorySmall"),
+                            normalized.get("categoryLarge")
+                            or normalized.get("category_large"),
+                            normalized.get("categoryMedium")
+                            or normalized.get("category_medium"),
+                            normalized.get("categorySmall")
+                            or normalized.get("category_small"),
                             normalized.get("gu"),
                             normalized.get("dong"),
                         )
@@ -113,7 +148,7 @@ class RecommendationRequest(BaseModel):
     session_id: str
     current_place: Place
     recent_places: RecentPlaces
-    visited_place_ids: list[str]
+    visited_place_ids: list[int]
     candidates: Candidates
     context: RecommendationContext
 
@@ -122,7 +157,7 @@ class RecommendationResponse(BaseModel):
     request_id: str
     session_id: str
     generated_at: str
-    current_place_id: str
+    current_place_id: int
     similar_places: list[dict[str, Any]]
     next_places: list[dict[str, Any]]
     recommendation_log: dict[str, Any]
@@ -136,31 +171,71 @@ class SimilarPlacesContext(BaseModel):
 
 
 class SimilarPlacesRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "examples": [
+                {
+                    "selected_place": {
+                        "place_id": 2,
+                        "place_name": "중앙로 지하상가",
+                        "description": "대전 원도심 쇼핑 공간",
+                        "tag": "쇼핑,원도심,대전",
+                        "place_address": "대전광역시 중구 중앙로",
+                        "latitude": 36.3281,
+                        "longitude": 127.4265,
+                        "gu": "중구",
+                        "dong": "은행동",
+                        "category_large": "쇼핑",
+                        "category_medium": "상가",
+                        "category_small": "지하상가",
+                        "congestion_rate": 61.0,
+                        "visitor_count": 980,
+                    },
+                    "nearby_places": [
+                        {
+                            "place_id": 3,
+                            "place_name": "으능정이문화의거리",
+                            "description": "대전 원도심 대표 문화 거리",
+                            "tag": "관광지,중구,문화거리",
+                            "place_address": "대전광역시 중구 중앙로164번길",
+                            "latitude": 36.3277,
+                            "longitude": 127.4281,
+                            "gu": "중구",
+                            "dong": "은행동",
+                            "category_large": "관광지",
+                            "category_medium": "거리",
+                            "category_small": "문화거리",
+                            "congestion_rate": 55.0,
+                            "visitor_count": 720,
+                        }
+                    ],
+                    "visited_place_ids": [],
+                    "radius_m": 1000,
+                }
+            ]
+        },
+    )
 
-    requestId: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("requestId", "request_id"),
-        description="요청 추적 ID(생략 시 선택 장소 ID로 생성)",
-    )
-    sessionId: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("sessionId", "session_id"),
-        description="사용자 세션 ID(선택)",
-    )
     selectedPlace: Place = Field(
-        validation_alias=AliasChoices("selectedPlace", "selected_place"),
+        validation_alias=AliasChoices("selected_place", "selectedPlace"),
         description="사용자가 선택한 기준 장소",
     )
     nearbyPlaces: Candidates = Field(
-        validation_alias=AliasChoices("nearbyPlaces", "candidates"),
+        validation_alias=AliasChoices("nearby_places", "nearbyPlaces", "candidates"),
         description="Spring이 조회한 인근 장소 목록 또는 Page 객체",
     )
-    visitedPlaceIds: list[str] = Field(
+    visitedPlaceIds: list[int] = Field(
         default_factory=list,
-        validation_alias=AliasChoices("visitedPlaceIds", "visited_place_ids"),
+        validation_alias=AliasChoices("visited_place_ids", "visitedPlaceIds"),
     )
-    radiusM: float = Field(default=1000, gt=0, le=1000, description="후보 반경(m)")
+    radiusM: float = Field(
+        default=1000,
+        gt=0,
+        le=1000,
+        validation_alias=AliasChoices("radius_m", "radiusM"),
+        description="후보 반경(m)",
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -169,14 +244,19 @@ class SimilarPlacesRequest(BaseModel):
         if not isinstance(value, dict):
             return value
         normalized = dict(value)
+        # 이전 호출 클라이언트가 보내던 추적용 값은 추천 계약에서 사용하지 않는다.
+        normalized.pop("request_id", None)
+        normalized.pop("requestId", None)
+        normalized.pop("session_id", None)
+        normalized.pop("sessionId", None)
         legacy_context = normalized.pop("context", None)
         if isinstance(legacy_context, dict) and "radiusM" not in normalized:
             normalized["radiusM"] = legacy_context.get("radius_m", 1000)
         return normalized
 
     def to_processor_request(self) -> dict[str, Any]:
-        request_id = self.requestId or f"similar-{self.selectedPlace.id}"
-        session_id = self.sessionId or f"similar-{self.selectedPlace.id}"
+        request_id = f"similar-{self.selectedPlace.id}"
+        session_id = request_id
         return {
             "request_id": request_id,
             "session_id": session_id,
@@ -189,7 +269,7 @@ class SimilarPlacesRequest(BaseModel):
 
 class SimilarPlacesResponse(BaseModel):
     generated_at: str
-    selected_place_id: str
+    selected_place_id: int
     similar_places: list[dict[str, Any]]
 
 
@@ -204,46 +284,89 @@ class NextPlacesContext(BaseModel):
 
 
 class NextPlacesRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "examples": [
+                {
+                    "selected_place": {
+                        "place_id": 2,
+                        "place_name": "중앙로 지하상가",
+                        "description": "대전 원도심 쇼핑 공간",
+                        "tag": "쇼핑,원도심,대전",
+                        "latitude": 36.3281,
+                        "longitude": 127.4265,
+                        "place_address": "대전광역시 중구 중앙로",
+                        "gu": "중구",
+                        "dong": "은행동",
+                        "category_large": "쇼핑",
+                        "category_medium": "상가",
+                        "category_small": "지하상가",
+                        "congestion_rate": 61.0,
+                        "visitor_count": 980,
+                    },
+                    "nearby_places": [
+                        {
+                            "place_id": 3,
+                            "place_name": "으능정이문화의거리",
+                            "description": "대전 원도심 대표 문화 거리",
+                            "tag": "관광지,중구,문화거리",
+                            "latitude": 36.3277,
+                            "longitude": 127.4281,
+                            "place_address": "대전광역시 중구 중앙로164번길",
+                            "gu": "중구",
+                            "dong": "은행동",
+                            "category_large": "관광지",
+                            "category_medium": "거리",
+                            "category_small": "문화거리",
+                            "congestion_rate": 55.0,
+                            "visitor_count": 720,
+                        }
+                    ],
+                    "visited_places": [],
+                    "visited_place_ids": [],
+                    "radius_m": 1000,
+                }
+            ]
+        },
+    )
 
-    requestId: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("requestId", "request_id"),
-        description="요청 추적 ID(생략 시 선택 장소 ID로 생성)",
-    )
-    sessionId: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("sessionId", "session_id"),
-        description="사용자 세션 ID(선택)",
-    )
     selectedPlace: Place = Field(
-        validation_alias=AliasChoices("selectedPlace", "currentPlace", "current_place"),
+        validation_alias=AliasChoices(
+            "selected_place", "selectedPlace", "currentPlace", "current_place"
+        ),
         description="사용자가 현재 선택한 장소",
     )
     nearbyPlaces: Candidates = Field(
-        validation_alias=AliasChoices("nearbyPlaces", "candidates"),
+        validation_alias=AliasChoices("nearby_places", "nearbyPlaces", "candidates"),
         description="Spring이 조회한 인근 장소 목록 또는 Page 객체",
     )
     visitedPlaces: list[Place] = Field(
         default_factory=list,
-        validation_alias=AliasChoices("visitedPlaces", "recent_places"),
+        validation_alias=AliasChoices("visited_places", "visitedPlaces", "recent_places"),
         description="사용자가 방문한 장소 목록",
     )
-    visitedPlaceIds: list[str] = Field(
+    visitedPlaceIds: list[int] = Field(
         default_factory=list,
-        validation_alias=AliasChoices("visitedPlaceIds", "visited_place_ids"),
+        validation_alias=AliasChoices("visited_place_ids", "visitedPlaceIds"),
     )
     currentTime: str | None = Field(
         default=None,
-        validation_alias=AliasChoices("currentTime", "current_time"),
+        validation_alias=AliasChoices("current_time", "currentTime"),
         description="추천 기준 시각(생략 시 현재 시각)",
     )
     weather: str | None = None
     userPreferences: str = Field(
         default="",
-        validation_alias=AliasChoices("userPreferences", "user_preferences"),
+        validation_alias=AliasChoices("user_preferences", "userPreferences"),
     )
-    radiusM: float = Field(default=1000, gt=0, le=1000, description="후보 반경(m)")
+    radiusM: float = Field(
+        default=1000,
+        gt=0,
+        le=1000,
+        validation_alias=AliasChoices("radius_m", "radiusM"),
+        description="후보 반경(m)",
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -252,6 +375,11 @@ class NextPlacesRequest(BaseModel):
         if not isinstance(value, dict):
             return value
         normalized = dict(value)
+        # 이전 호출 클라이언트가 보내던 추적용 값은 추천 계약에서 사용하지 않는다.
+        normalized.pop("request_id", None)
+        normalized.pop("requestId", None)
+        normalized.pop("session_id", None)
+        normalized.pop("sessionId", None)
         legacy_context = normalized.pop("context", None)
         if isinstance(legacy_context, dict):
             normalized.setdefault("currentTime", legacy_context.get("current_time"))
@@ -261,13 +389,13 @@ class NextPlacesRequest(BaseModel):
         return normalized
 
     def to_processor_request(self) -> dict[str, Any]:
-        request_id = self.requestId or f"next-{self.selectedPlace.id}"
-        session_id = self.sessionId or f"next-{self.selectedPlace.id}"
+        request_id = f"next-{self.selectedPlace.id}"
+        session_id = request_id
         visited_rows = [place.model_dump(mode="json") for place in self.visitedPlaces]
         visited_rows.sort(key=lambda place: str(place.get("visitedAt") or ""))
         visited_ids = list(
             dict.fromkeys(
-                [*self.visitedPlaceIds, *(str(place["id"]) for place in visited_rows)]
+                [*self.visitedPlaceIds, *(place["id"] for place in visited_rows)]
             )
         )
         return {
@@ -290,8 +418,8 @@ class NextPlacesRequest(BaseModel):
 
 class NextPlacesResponse(BaseModel):
     generated_at: str
-    current_place_id: str
-    visited_place_ids: list[str]
+    current_place_id: int
+    visited_place_ids: list[int]
     next_places: list[dict[str, Any]]
 
 

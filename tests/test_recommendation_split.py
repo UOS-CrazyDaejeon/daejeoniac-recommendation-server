@@ -17,7 +17,7 @@ from recommendation_api.main import (
 
 
 def place(
-    place_id: str,
+    place_id: int,
     name: str,
     latitude: float,
     longitude: float,
@@ -44,7 +44,7 @@ def place(
 def candidates() -> list[dict]:
     return [
         place(
-            f"candidate-{index}",
+            index,
             f"후보 장소 {index}",
             36.3500 + index * 0.0001,
             127.3800 + index * 0.0001,
@@ -54,15 +54,15 @@ def candidates() -> list[dict]:
     ]
 
 
-SELECTED_PLACE = place("selected", "선택한 카페", 36.3500, 127.3800)
-RECENT_PLACE = place("recent", "최근 서점", 36.3498, 127.3798, category="bookstore")
+SELECTED_PLACE = place(100, "선택한 카페", 36.3500, 127.3800)
+RECENT_PLACE = place(99, "최근 서점", 36.3498, 127.3798, category="bookstore")
 
 
 class DeterministicSimilarityScorer:
     def score_candidates(self, current_place, candidate_rows):
         del current_place
         return {
-            candidate["id"]: SimilarityScore(
+            str(candidate["id"]): SimilarityScore(
                 score=1.0 - index * 0.03,
                 reason="선택 장소와 분위기와 태그가 비슷합니다.",
                 source="test_similarity",
@@ -122,8 +122,9 @@ class SplitRecommendationProcessorTest(unittest.TestCase):
             similarity_scorer=DeterministicSimilarityScorer(),
         )
 
-        self.assertEqual(response["selected_place_id"], "selected")
+        self.assertEqual(response["selected_place_id"], 100)
         self.assertEqual(len(response["similar_places"]), 5)
+        self.assertIsInstance(response["similar_places"][0]["place_id"], int)
         self.assertNotIn("next_places", response)
         self.assertEqual(
             response["similar_places"][0]["similarity_source"],
@@ -142,9 +143,10 @@ class SplitRecommendationProcessorTest(unittest.TestCase):
             transition_scorer=DeterministicTransitionScorer(),
         )
 
-        self.assertEqual(response["current_place_id"], "selected")
-        self.assertEqual(response["visited_place_ids"], ["recent"])
+        self.assertEqual(response["current_place_id"], 100)
+        self.assertEqual(response["visited_place_ids"], [99])
         self.assertEqual(len(response["next_places"]), 5)
+        self.assertIsInstance(response["next_places"][0]["place_id"], int)
         self.assertNotIn("similar_places", response)
         self.assertEqual(
             response["next_places"][0]["transition_source"],
@@ -196,6 +198,28 @@ class SplitRecommendationApiTest(unittest.TestCase):
     def tearDown(self):
         app.dependency_overrides.clear()
 
+    @staticmethod
+    def _snake_place(place_id: int, name: str, *, visited_at: str | None = None) -> dict:
+        place = {
+            "place_id": place_id,
+            "place_name": name,
+            "description": f"{name} 설명",
+            "tag": "쇼핑,원도심,대전",
+            "place_address": "대전광역시 중구 중앙로",
+            "latitude": 36.3281,
+            "longitude": 127.4265,
+            "gu": "중구",
+            "dong": "은행동",
+            "category_large": "쇼핑",
+            "category_medium": "상가",
+            "category_small": "지하상가",
+            "congestion_rate": 61.0,
+            "visitor_count": 980,
+        }
+        if visited_at is not None:
+            place["visited_at"] = visited_at
+        return place
+
     def test_similar_places_endpoint_has_separate_response(self):
         def processor(request):
             return {
@@ -203,7 +227,7 @@ class SplitRecommendationApiTest(unittest.TestCase):
                 "session_id": request["session_id"],
                 "generated_at": "2026-08-15T14:00:00+09:00",
                 "selected_place_id": request["selected_place"]["id"],
-                "similar_places": [{"rank": 1, "place_id": "candidate-1"}],
+                "similar_places": [{"rank": 1, "place_id": 1}],
             }
 
         app.dependency_overrides[get_similar_places_processor] = lambda: processor
@@ -227,7 +251,7 @@ class SplitRecommendationApiTest(unittest.TestCase):
                 "session_id": request["session_id"],
                 "generated_at": "2026-08-28T12:00:00+09:00",
                 "selected_place_id": request["selected_place"]["id"],
-                "similar_places": [{"rank": 1, "place_id": "2"}],
+                "similar_places": [{"rank": 1, "place_id": 2}],
             }
 
         request = {
@@ -279,11 +303,11 @@ class SplitRecommendationApiTest(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(captured["selected_place"]["id"], "1")
+        self.assertEqual(captured["selected_place"]["id"], 1)
         self.assertEqual(captured["selected_place"]["congestion"], 72.5)
         self.assertEqual(captured["selected_place"]["monthly_visitors"], 1320)
         self.assertEqual(captured["selected_place"]["tags"], ["빵", "디저트", "대전"])
-        self.assertEqual(captured["candidates"][0]["id"], "2")
+        self.assertEqual(captured["candidates"][0]["id"], 2)
         self.assertEqual(captured["candidates"][0]["tags"], ["쇼핑", "원도심", "대전"])
 
     def test_next_places_endpoint_has_separate_response(self):
@@ -294,7 +318,7 @@ class SplitRecommendationApiTest(unittest.TestCase):
                 "generated_at": "2026-08-15T14:00:00+09:00",
                 "current_place_id": request["current_place"]["id"],
                 "visited_place_ids": request["visited_place_ids"],
-                "next_places": [{"rank": 1, "place_id": "candidate-1"}],
+                "next_places": [{"rank": 1, "place_id": 1}],
                 "recommendation_log": {"items": []},
             }
 
@@ -321,7 +345,7 @@ class SplitRecommendationApiTest(unittest.TestCase):
                 "generated_at": "2026-08-28T12:00:00+09:00",
                 "current_place_id": request["current_place"]["id"],
                 "visited_place_ids": request["visited_place_ids"],
-                "next_places": [{"rank": 1, "place_id": "2"}],
+                "next_places": [{"rank": 1, "place_id": 2}],
                 "recommendation_log": {"items": []},
             }
 
@@ -372,11 +396,74 @@ class SplitRecommendationApiTest(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(captured["current_place"]["id"], "1")
-        self.assertEqual(captured["candidates"][0]["id"], "2")
-        self.assertEqual(captured["visited_place_ids"], ["10"])
-        self.assertEqual(captured["recent_places"][0]["id"], "10")
+        self.assertEqual(captured["current_place"]["id"], 1)
+        self.assertEqual(captured["candidates"][0]["id"], 2)
+        self.assertEqual(captured["visited_place_ids"], [10])
+        self.assertEqual(captured["recent_places"][0]["id"], 10)
         self.assertTrue(captured["context"]["current_time"])
+
+    def test_similar_places_accepts_spring_snake_case_dto(self):
+        captured = {}
+
+        def processor(request):
+            captured.update(request)
+            return {
+                "generated_at": "2026-08-30T12:00:00+09:00",
+                "selected_place_id": request["selected_place"]["id"],
+                "similar_places": [{"rank": 1, "place_id": 3}],
+            }
+
+        app.dependency_overrides[get_similar_places_processor] = lambda: processor
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/v1/recommendations/similar-places",
+                json={
+                    "selected_place": self._snake_place(2, "중앙로 지하상가"),
+                    "nearby_places": [self._snake_place(3, "으능정이문화의거리")],
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(captured["selected_place"]["id"], 2)
+        self.assertEqual(captured["candidates"][0]["id"], 3)
+        self.assertEqual(captured["candidates"][0]["categoryLarge"], "쇼핑")
+        self.assertEqual(captured["candidates"][0]["monthly_visitors"], 980)
+
+    def test_next_places_accepts_spring_snake_case_dto(self):
+        captured = {}
+
+        def processor(request):
+            captured.update(request)
+            return {
+                "generated_at": "2026-08-30T12:00:00+09:00",
+                "current_place_id": request["current_place"]["id"],
+                "visited_place_ids": request["visited_place_ids"],
+                "next_places": [{"rank": 1, "place_id": 3}],
+            }
+
+        app.dependency_overrides[get_next_places_processor] = lambda: processor
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/v1/recommendations/next-places",
+                json={
+                    "selected_place": self._snake_place(2, "중앙로 지하상가"),
+                    "nearby_places": [self._snake_place(3, "으능정이문화의거리")],
+                    "visited_places": [
+                        self._snake_place(
+                            10,
+                            "한밭수목원",
+                            visited_at="2026-08-28T14:30:00",
+                        )
+                    ],
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(captured["current_place"]["id"], 2)
+        self.assertEqual(captured["visited_place_ids"], [10])
+        self.assertEqual(
+            captured["recent_places"][0]["visitedAt"], "2026-08-28T14:30:00"
+        )
 
     def test_accepts_spring_page_candidates_and_uses_content_only(self):
         captured = {}
@@ -388,7 +475,7 @@ class SplitRecommendationApiTest(unittest.TestCase):
                 "session_id": request["session_id"],
                 "generated_at": "2026-08-15T14:00:00+09:00",
                 "selected_place_id": request["selected_place"]["id"],
-                "similar_places": [{"rank": 1, "place_id": "8"}],
+                "similar_places": [{"rank": 1, "place_id": 8}],
             }
 
         request = similar_request()
@@ -435,7 +522,7 @@ class SplitRecommendationApiTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(captured["candidates"]), 2)
-        self.assertEqual(captured["candidates"][0]["id"], "8")
+        self.assertEqual(captured["candidates"][0]["id"], 8)
         self.assertEqual(captured["candidates"][0]["name"], "대전오월드 주랜드")
         self.assertEqual(captured["candidates"][0]["category"], "동물원")
         self.assertEqual(

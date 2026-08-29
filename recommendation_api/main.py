@@ -302,18 +302,18 @@ def create_similar_place_recommendations(
             status_code=400,
             code="INVALID_SIMILAR_PLACES_REQUEST",
             message=str(exc),
-            request_id=request.requestId,
+            request_id=f"similar-{request.selectedPlace.id}",
         )
     except Exception:
         logger.exception(
-            "Unexpected similar-place failure request_id=%s",
-            request.requestId,
+            "Unexpected similar-place failure selected_place_id=%s",
+            request.selectedPlace.id,
         )
         return _error_response(
             status_code=500,
             code="INTERNAL_SERVER_ERROR",
             message="비슷한 장소 추천 처리 중 오류가 발생했습니다",
-            request_id=request.requestId,
+            request_id=f"similar-{request.selectedPlace.id}",
         )
 
 
@@ -340,18 +340,18 @@ def create_next_place_recommendations(
             status_code=400,
             code="INVALID_NEXT_PLACES_REQUEST",
             message=str(exc),
-            request_id=request.requestId,
+            request_id=f"next-{request.selectedPlace.id}",
         )
     except Exception:
         logger.exception(
-            "Unexpected next-place failure request_id=%s",
-            request.requestId,
+            "Unexpected next-place failure selected_place_id=%s",
+            request.selectedPlace.id,
         )
         return _error_response(
             status_code=500,
             code="INTERNAL_SERVER_ERROR",
             message="다음 장소 추천 처리 중 오류가 발생했습니다",
-            request_id=request.requestId,
+            request_id=f"next-{request.selectedPlace.id}",
         )
 
 

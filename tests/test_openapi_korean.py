@@ -69,6 +69,23 @@ class KoreanOpenApiTest(unittest.TestCase):
             similar_operation["responses"]["422"]["description"],
             "요청 형식 검증 오류",
         )
+        similar_example = spec["components"]["schemas"][
+            "SimilarPlacesRequest"
+        ]["examples"][0]
+        self.assertEqual(similar_example["selected_place"]["place_id"], 2)
+        self.assertIn("category_large", similar_example["selected_place"])
+        self.assertNotIn("additionalProp1", similar_example)
+        similar_properties = spec["components"]["schemas"][
+            "SimilarPlacesRequest"
+        ]["properties"]
+        self.assertNotIn("requestId", similar_properties)
+        self.assertNotIn("sessionId", similar_properties)
+        self.assertEqual(
+            spec["components"]["schemas"]["Place"]["properties"]["place_id"][
+                "type"
+            ],
+            "integer",
+        )
 
 
 if __name__ == "__main__":

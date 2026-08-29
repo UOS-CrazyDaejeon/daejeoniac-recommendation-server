@@ -1679,7 +1679,7 @@ def recommend_similar_places(
         )
         results.append(
             {
-                "place_id": place_id,
+                "place_id": int(place_id),
                 "name": str(candidate["name"]),
                 "categoryLarge": candidate.get("categoryLarge"),
                 "categoryMedium": candidate.get("categoryMedium"),
@@ -1746,7 +1746,7 @@ def recommend_similar_places_with_scorer(
             )
         results.append(
             {
-                "place_id": place_id,
+                "place_id": int(place_id),
                 "name": str(candidate["name"]),
                 "categoryLarge": candidate.get("categoryLarge"),
                 "categoryMedium": candidate.get("categoryMedium"),
@@ -1879,7 +1879,7 @@ def process_spring_similar_places_request(
     )
     return {
         "generated_at": datetime.now().astimezone().isoformat(),
-        "selected_place_id": str(selected_place["id"]),
+        "selected_place_id": int(selected_place["id"]),
         "similar_places": similar_places,
     }
 
@@ -1946,7 +1946,7 @@ def process_spring_next_places_request(
 
     candidate_ids = {str(candidate["id"]) for candidate in eligible_candidates}
     next_places = [
-        {"rank": rank, **place}
+        {"rank": rank, **place, "place_id": int(place["place_id"])}
         for rank, place in enumerate(
             (place for place in next_places if place["place_id"] in candidate_ids),
             start=1,
@@ -1960,8 +1960,8 @@ def process_spring_next_places_request(
     )
     return {
         "generated_at": datetime.now().astimezone().isoformat(),
-        "current_place_id": str(current_place["id"]),
-        "visited_place_ids": [str(place_id) for place_id in request["visited_place_ids"]],
+        "current_place_id": int(current_place["id"]),
+        "visited_place_ids": [int(place_id) for place_id in request["visited_place_ids"]],
         "next_places": next_places,
         "recommendation_log": recommendation_log,
     }
@@ -2012,7 +2012,7 @@ def process_spring_recommendation_request(
         "request_id": str(request["request_id"]),
         "session_id": str(request["session_id"]),
         "generated_at": datetime.now().astimezone().isoformat(),
-        "current_place_id": str(request["current_place"]["id"]),
+        "current_place_id": int(request["current_place"]["id"]),
         "similar_places": similar_response["similar_places"],
         "next_places": next_response["next_places"],
         "recommendation_log": next_response["recommendation_log"],
