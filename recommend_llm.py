@@ -1850,8 +1850,6 @@ def _eligible_candidates_within_radius(
         )
         eligible_candidates.append(normalized)
 
-    if len(eligible_candidates) < 5:
-        raise ValueError("반경 내의 미방문 후보가 최소 5개 필요합니다")
     return eligible_candidates
 
 
@@ -1954,8 +1952,6 @@ def process_spring_next_places_request(
             start=1,
         )
     ][:NEXT_TOP_K]
-    if len(next_places) != NEXT_TOP_K:
-        raise ValueError("다음 장소 추천 5개를 만들 수 없습니다")
 
     recommendation_log = log_recommendation_event(
         next_places,

@@ -286,9 +286,9 @@ def create_recommendations(
     summary="선택 장소와 비슷한 장소 추천",
     description=(
         "사용자가 선택한 장소를 기준으로 카테고리, 태그, 설명과 거리가 "
-        "비슷한 후보 장소 5개를 추천합니다. 다음 장소 추천은 실행하지 않습니다."
+        "비슷한 후보 장소를 최대 5개 추천합니다. 다음 장소 추천은 실행하지 않습니다."
     ),
-    response_description="선택 장소와 비슷한 장소 5개",
+    response_description="선택 장소와 비슷한 장소(최대 5개)",
     responses=RECOMMENDATION_ERROR_RESPONSES,
 )
 def create_similar_place_recommendations(
@@ -324,9 +324,9 @@ def create_similar_place_recommendations(
     summary="다음 이동 장소 추천",
     description=(
         "현재 장소, 최근 선택 이력, 시간과 날씨를 바탕으로 다음 이동에 적합한 "
-        "장소 5개를 추천합니다. 유사 장소 추천은 실행하지 않습니다."
+        "장소를 최대 5개 추천합니다. 유사 장소 추천은 실행하지 않습니다."
     ),
-    response_description="다음 이동 장소 5개와 추천 로그",
+    response_description="다음 이동 장소(최대 5개)와 추천 로그",
     responses=RECOMMENDATION_ERROR_RESPONSES,
 )
 def create_next_place_recommendations(

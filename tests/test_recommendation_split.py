@@ -157,6 +157,24 @@ class SplitRecommendationProcessorTest(unittest.TestCase):
         )
         self.assertNotIn("category", response["next_places"][0])
 
+    def test_processors_return_available_candidates_when_fewer_than_five(self):
+        similar = similar_request()
+        similar["candidates"] = similar["candidates"][:1]
+        similar_response = process_spring_similar_places_request(
+            similar,
+            similarity_scorer=DeterministicSimilarityScorer(),
+        )
+
+        next_places = next_request()
+        next_places["candidates"] = next_places["candidates"][:1]
+        next_response = process_spring_next_places_request(
+            next_places,
+            transition_scorer=DeterministicTransitionScorer(),
+        )
+
+        self.assertEqual(len(similar_response["similar_places"]), 1)
+        self.assertEqual(len(next_response["next_places"]), 1)
+
     def test_legacy_combined_processor_still_returns_both_results(self):
         request = next_request()
         request["request_id"] = "combined-001"

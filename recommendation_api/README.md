@@ -51,6 +51,7 @@ Content-Type: application/json
 
 `requestId`, `sessionId`, `visitedPlaceIds`, `radiusM`은 선택 필드다. `radiusM`의
 기본값은 1000m이며, `tag`가 쉼표로 구분된 문자열이면 추천용 태그 배열로 변환한다.
+반경 안의 미방문 후보가 5개 미만이면, 존재하는 후보만큼만 반환한다.
 
 응답에는 `generated_at`, `selected_place_id`, `similar_places`만 포함되고
 `request_id`, `session_id`, `next_places`는 반환하지 않는다.
@@ -84,6 +85,7 @@ Content-Type: application/json
 
 `currentTime`, `weather`, `userPreferences`, `radiusM`, `requestId`, `sessionId`은
 선택 필드다. `currentTime`이 없으면 Python 서버의 현재 시각을 기준으로 추천한다.
+반경 안의 미방문 후보가 5개 미만이면, 존재하는 후보만큼만 반환한다.
 
 ### 기존 통합 추천 요청(deprecated)
 
