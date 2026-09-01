@@ -133,6 +133,8 @@ class SplitRecommendationProcessorTest(unittest.TestCase):
         )
 
         self.assertEqual(set(scores), {"1"})
+        self.assertTrue(scores["1"].reason.endswith("좋은 장소"))
+        self.assertNotIn(".", scores["1"].reason)
 
     def test_openai_similarity_falls_back_without_id_type_error(self):
         scores = OpenAISimilarityScorer(

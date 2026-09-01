@@ -648,7 +648,6 @@ class HeuristicTransitionScorer:
                 recent_categories[-1] if recent_categories else "unknown",
             )
         )
-        current_name = str(current_place.get("name", "현재 장소"))
         transition_table = CATEGORY_TRANSITIONS.get(latest_category, {})
         hour = _extract_hour(context.current_time)
 
@@ -665,18 +664,12 @@ class HeuristicTransitionScorer:
 
             score += _time_category_adjustment(hour, category)
             score = clamp(score)
-            reason = (
-                f"최근 {latest_category} 방문 이후 {category} 활동으로의 "
-                f"전환 가능성을 규칙 기반으로 평가"
-            )
+            reason = f"{category} 활동으로 이어지는 다음 동선"
             results[place_id] = TransitionScore(
                 score=score,
                 reason=reason,
                 source="heuristic",
-                recommendation_reason=(
-                    f"{current_name} 다음에 {candidate['name']}에서 "
-                    f"새로운 {category} 분위기를 즐기기 좋아요!"
-                ),
+                recommendation_reason=_place_recommendation_phrase(candidate),
             )
 
         return results
@@ -794,9 +787,11 @@ class OpenAITransitionScorer:
             "현재 문맥에서 각 후보가 실제로 자연스러운지 개별적으로 판단하라. "
             "후보의 기본 점수는 참고 정보일 뿐 다시 산술 계산하지 마라. "
             "입력에 없는 장소나 사실을 만들지 말고 모든 입력 후보를 정확히 한 번씩 반환하라. "
-            "reason은 내부 판단 근거를 한국어 한 문장으로 간결하게 작성하라. "
-            "recommendation_reason은 사용자 화면에 표시할 문구로, 현재 장소와 후보 장소의 "
-            "연결 이유가 드러나도록 친근한 한국어 한 문장으로 작성하라."
+            "reason과 recommendation_reason은 반드시 한국어의 짧은 관형구 또는 명사구로 작성하라. "
+            "문장 종결형(요, 합니다, 입니다), 마침표, 느낌표를 사용하지 마라. "
+            "예시는 '문화 산책을 곁들이기 좋은 쇼핑 거리', '저녁 식사 뒤 들르기 좋은 카페'다. "
+            "reason은 내부 판단용, recommendation_reason은 사용자 표시용이지만 둘 다 "
+            "한 문장 설명이 아닌 짧은 추천 문구로 작성하라."
         )
 
         try:
@@ -844,13 +839,13 @@ class OpenAITransitionScorer:
                 score = clamp(float(item.get("transition_score", 0.0)))
             except (TypeError, ValueError):
                 continue
-            reason = str(item.get("reason", "다음 장소 흐름을 LLM이 평가함")).strip()
+            reason = str(item.get("reason", "다음 동선과 어울리는 장소")).strip()
             recommendation_reason = str(
                 item.get("recommendation_reason", "")
             ).strip()
             results[place_id] = TransitionScore(
                 score=score,
-                reason=reason or "다음 장소 흐름을 LLM이 평가함",
+                reason=reason or "다음 동선과 어울리는 장소",
                 source="openai",
                 recommendation_reason=(
                     recommendation_reason
@@ -890,7 +885,7 @@ class HeuristicSimilarityScorer:
         return {
             str(row["place_id"]): SimilarityScore(
                 score=row["similarity_score"],
-                reason="카테고리, 태그, 설명, 거리를 코드로 비교",
+                reason=_place_recommendation_phrase(row),
                 source="heuristic",
                 tag_cosine_score=tag_cosine_scores.get(
                     str(row["place_id"]),
@@ -982,7 +977,10 @@ class OpenAISimilarityScorer:
             "단순히 같은 카테고리인지보다 이용 목적, 분위기, 활동, 공간 성격이 얼마나 비슷한지 판단하라. "
             "tag_cosine_score는 코드가 계산한 태그 기준점이므로 참고하되, description과 활동 맥락을 반영해 보정하라. "
             "거리는 가까울수록 약간 유리하게 보되, 유사도의 핵심은 장소의 느낌과 활동이다. "
-            "모든 후보를 정확히 한 번씩 반환하고, reason은 한국어 한 문장으로 작성하라."
+            "모든 후보를 정확히 한 번씩 반환하라. reason은 반드시 한국어의 짧은 관형구 또는 명사구로 작성하라. "
+            "문장 종결형(요, 합니다, 입니다), 마침표, 느낌표를 사용하지 마라. "
+            "예시는 '사진 찍기 좋은 베이커리', '조용한 산책과 어울리는 전시 공간'이다. "
+            "점수 산정 과정이나 비교 설명을 문장으로 쓰지 마라."
         )
 
         try:
@@ -1038,10 +1036,10 @@ class OpenAISimilarityScorer:
                 score = clamp(float(item.get("similarity_score", 0.0)))
             except (TypeError, ValueError):
                 continue
-            reason = str(item.get("reason", "현재 장소와의 분위기 유사도를 LLM이 평가함")).strip()
+            reason = str(item.get("reason", "비슷한 분위기를 즐기기 좋은 장소")).strip()
             results[place_id] = SimilarityScore(
                 score=score,
-                reason=reason or "현재 장소와의 분위기 유사도를 LLM이 평가함",
+                reason=reason or "비슷한 분위기를 즐기기 좋은 장소",
                 source="openai",
                 tag_cosine_score=tag_cosine_scores.get(place_id, 0.0),
             )
@@ -1074,6 +1072,18 @@ def _rename_score_source(
 
 def _one_line_text(value: Any) -> str:
     return " ".join(str(value or "").split())
+
+
+def _place_recommendation_phrase(place: dict[str, Any]) -> str:
+    """문장형 fallback 대신 화면에 바로 보일 짧은 추천 문구를 만든다."""
+    category = _one_line_text(
+        place.get("categorySmall")
+        or place.get("category_small")
+        or place.get("category")
+    )
+    if category and category.lower() != "unknown":
+        return f"{category} 분위기를 즐기기 좋은 장소"
+    return "가볍게 들르기 좋은 장소"
 
 
 def _normalize_place_text(place: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -1381,11 +1391,9 @@ def recommend_next_places_hybrid(
     transition_scores: dict[str, TransitionScore] = {
         candidate["place_id"]: TransitionScore(
             score=0.0,
-            reason="선택 이력이 없어 기본 점수만 사용",
+            reason="처음 방문하기 좋은 장소",
             source="cold_start",
-            recommendation_reason=(
-                f"{candidate['name']}은 조용하고 덜 알려진 장소 조건에 잘 맞아요!"
-            ),
+            recommendation_reason=_place_recommendation_phrase(candidate),
         )
         for candidate in candidates
     }
@@ -1415,9 +1423,9 @@ def recommend_next_places_hybrid(
             node_id,
             TransitionScore(
                 score=0.0,
-                reason="전이 점수를 얻지 못해 0점 처리",
+                reason=f"{candidate.get('category', '새로운')} 분위기를 즐기기 좋은 장소",
                 source="missing",
-                recommendation_reason=f"{candidate['name']}을 다음 장소로 살펴보세요!",
+                recommendation_reason=_place_recommendation_phrase(candidate),
             ),
         )
         final_score = combine_recommendation_scores(
@@ -1729,7 +1737,7 @@ def recommend_similar_places_with_scorer(
             place_id,
             SimilarityScore(
                 score=0.0,
-                reason="유사도 점수를 얻지 못했습니다.",
+                reason="비슷한 분위기를 즐기기 좋은 장소",
                 source="missing",
             ),
         )
