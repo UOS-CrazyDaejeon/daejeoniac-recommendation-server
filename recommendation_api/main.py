@@ -1,5 +1,6 @@
 from collections.abc import Callable
 from datetime import datetime, timezone
+import json
 import logging
 import os
 from time import perf_counter
@@ -167,6 +168,15 @@ def _request_id_from_body(body: Any) -> str | None:
     return str(request_id) if request_id is not None else None
 
 
+def _log_recommendation_result(endpoint: str, response: dict[str, Any]) -> None:
+    """추천 결과를 컨테이너 로그에서 바로 확인할 수 있게 남긴다."""
+    logger.info(
+        "Recommendation result endpoint=%s response=%s",
+        endpoint,
+        json.dumps(response, ensure_ascii=False, default=str),
+    )
+
+
 def _face_s3_error_code(error_code: str) -> str:
     return {
         "S3_RECEIPT_NOT_CONFIGURED": "S3_IMAGE_NOT_CONFIGURED",
@@ -183,6 +193,12 @@ def handle_request_validation_error(
     request: Request,
     exc: RequestValidationError,
 ) -> JSONResponse:
+    logger.warning(
+        "Invalid request body endpoint=%s request_id=%s errors=%s",
+        request.url.path,
+        _request_id_from_body(exc.body),
+        json.dumps(exc.errors(), ensure_ascii=False, default=str),
+    )
     return _error_response(
         status_code=422,
         code="INVALID_REQUEST_BODY",
@@ -258,7 +274,9 @@ def create_recommendations(
     processor: RecommendationProcessor = Depends(get_recommendation_processor),
 ) -> dict[str, Any] | JSONResponse:
     try:
-        return processor(request.model_dump(mode="json"))
+        response = processor(request.model_dump(mode="json"))
+        _log_recommendation_result("/api/v1/recommendations", response)
+        return response
     except ValueError as exc:
         return _error_response(
             status_code=400,
@@ -296,7 +314,12 @@ def create_similar_place_recommendations(
     processor: RecommendationProcessor = Depends(get_similar_places_processor),
 ) -> dict[str, Any] | JSONResponse:
     try:
-        return processor(request.to_processor_request())
+        response = processor(request.to_processor_request())
+        _log_recommendation_result(
+            "/api/v1/recommendations/similar-places",
+            response,
+        )
+        return response
     except ValueError as exc:
         return _error_response(
             status_code=400,
@@ -334,7 +357,12 @@ def create_next_place_recommendations(
     processor: RecommendationProcessor = Depends(get_next_places_processor),
 ) -> dict[str, Any] | JSONResponse:
     try:
-        return processor(request.to_processor_request())
+        response = processor(request.to_processor_request())
+        _log_recommendation_result(
+            "/api/v1/recommendations/next-places",
+            response,
+        )
+        return response
     except ValueError as exc:
         return _error_response(
             status_code=400,
