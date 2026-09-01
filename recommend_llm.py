@@ -664,7 +664,7 @@ class HeuristicTransitionScorer:
 
             score += _time_category_adjustment(hour, category)
             score = clamp(score)
-            reason = f"{category} 활동으로 이어지는 다음 동선"
+            reason = _place_recommendation_phrase(candidate)
             results[place_id] = TransitionScore(
                 score=score,
                 reason=reason,
@@ -787,11 +787,12 @@ class OpenAITransitionScorer:
             "현재 문맥에서 각 후보가 실제로 자연스러운지 개별적으로 판단하라. "
             "후보의 기본 점수는 참고 정보일 뿐 다시 산술 계산하지 마라. "
             "입력에 없는 장소나 사실을 만들지 말고 모든 입력 후보를 정확히 한 번씩 반환하라. "
-            "reason과 recommendation_reason은 반드시 한국어의 짧은 관형구 또는 명사구로 작성하라. "
-            "문장 종결형(요, 합니다, 입니다), 마침표, 느낌표를 사용하지 마라. "
-            "예시는 '문화 산책을 곁들이기 좋은 쇼핑 거리', '저녁 식사 뒤 들르기 좋은 카페'다. "
-            "reason은 내부 판단용, recommendation_reason은 사용자 표시용이지만 둘 다 "
-            "한 문장 설명이 아닌 짧은 추천 문구로 작성하라."
+            "reason과 recommendation_reason은 반드시 한국어의 '~기 좋은 장소' 형식으로 작성하고 "
+            "마지막 단어를 반드시 '장소'로 끝내라. "
+            "예시는 '사진 찍기 좋은 장소', '저녁 산책하기 좋은 장소', '휴식하기 좋은 장소'다. "
+            "'한밭종합운동장으로 가벼운 산책 연계'처럼 메모형 표현이나 문장 종결형(요, 합니다, 입니다), "
+            "마침표, 느낌표를 사용하지 마라. reason은 내부 판단용, recommendation_reason은 사용자 표시용이지만 "
+            "둘 다 같은 형식을 지켜라."
         )
 
         try:
@@ -839,17 +840,21 @@ class OpenAITransitionScorer:
                 score = clamp(float(item.get("transition_score", 0.0)))
             except (TypeError, ValueError):
                 continue
-            reason = str(item.get("reason", "다음 동선과 어울리는 장소")).strip()
+            fallback_score = fallback_scores[place_id]
+            reason = _activity_recommendation_phrase(
+                item.get("reason"),
+                fallback_score.reason,
+            )
             recommendation_reason = str(
                 item.get("recommendation_reason", "")
             ).strip()
             results[place_id] = TransitionScore(
                 score=score,
-                reason=reason or "다음 동선과 어울리는 장소",
+                reason=reason,
                 source="openai",
-                recommendation_reason=(
-                    recommendation_reason
-                    or fallback_scores[place_id].recommendation_reason
+                recommendation_reason=_activity_recommendation_phrase(
+                    recommendation_reason,
+                    fallback_score.recommendation_reason,
                 ),
             )
 
@@ -977,10 +982,10 @@ class OpenAISimilarityScorer:
             "단순히 같은 카테고리인지보다 이용 목적, 분위기, 활동, 공간 성격이 얼마나 비슷한지 판단하라. "
             "tag_cosine_score는 코드가 계산한 태그 기준점이므로 참고하되, description과 활동 맥락을 반영해 보정하라. "
             "거리는 가까울수록 약간 유리하게 보되, 유사도의 핵심은 장소의 느낌과 활동이다. "
-            "모든 후보를 정확히 한 번씩 반환하라. reason은 반드시 한국어의 짧은 관형구 또는 명사구로 작성하라. "
-            "문장 종결형(요, 합니다, 입니다), 마침표, 느낌표를 사용하지 마라. "
-            "예시는 '사진 찍기 좋은 베이커리', '조용한 산책과 어울리는 전시 공간'이다. "
-            "점수 산정 과정이나 비교 설명을 문장으로 쓰지 마라."
+            "모든 후보를 정확히 한 번씩 반환하라. reason은 반드시 한국어의 '~기 좋은 장소' 형식으로 작성하고 "
+            "마지막 단어를 반드시 '장소'로 끝내라. "
+            "예시는 '사진 찍기 좋은 장소', '조용히 쉬기 좋은 장소', '산책하기 좋은 장소'다. "
+            "메모형 표현이나 점수 산정 과정, 문장 종결형(요, 합니다, 입니다), 마침표, 느낌표를 사용하지 마라."
         )
 
         try:
@@ -1036,10 +1041,13 @@ class OpenAISimilarityScorer:
                 score = clamp(float(item.get("similarity_score", 0.0)))
             except (TypeError, ValueError):
                 continue
-            reason = str(item.get("reason", "비슷한 분위기를 즐기기 좋은 장소")).strip()
+            reason = _activity_recommendation_phrase(
+                item.get("reason"),
+                fallback_scores[place_id].reason,
+            )
             results[place_id] = SimilarityScore(
                 score=score,
-                reason=reason or "비슷한 분위기를 즐기기 좋은 장소",
+                reason=reason,
                 source="openai",
                 tag_cosine_score=tag_cosine_scores.get(place_id, 0.0),
             )
@@ -1084,6 +1092,14 @@ def _place_recommendation_phrase(place: dict[str, Any]) -> str:
     if category and category.lower() != "unknown":
         return f"{category} 분위기를 즐기기 좋은 장소"
     return "가볍게 들르기 좋은 장소"
+
+
+def _activity_recommendation_phrase(value: Any, fallback: str) -> str:
+    """LLM 문구가 화면 규칙(~기 좋은 장소)을 지키지 않으면 대체한다."""
+    phrase = _one_line_text(value).rstrip(".! ")
+    if re.fullmatch(r".+기 좋은 장소", phrase):
+        return phrase
+    return fallback
 
 
 def _normalize_place_text(place: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -1428,6 +1444,15 @@ def recommend_next_places_hybrid(
                 recommendation_reason=_place_recommendation_phrase(candidate),
             ),
         )
+        fallback_phrase = _place_recommendation_phrase(candidate)
+        transition_reason = _activity_recommendation_phrase(
+            transition.reason,
+            fallback_phrase,
+        )
+        recommendation_reason = _activity_recommendation_phrase(
+            transition.recommendation_reason,
+            fallback_phrase,
+        )
         final_score = combine_recommendation_scores(
             base_score=base_scores[node_id],
             ppr_score=normalized_ppr[node_id],
@@ -1448,8 +1473,8 @@ def recommend_next_places_hybrid(
                 "tags": list(attrs.get("tags", [])),
                 "final_score": round(final_score, 6),
                 "filter_relaxed": not candidate["policy_passed"],
-                "transition_reason": transition.reason,
-                "recommendation_reason": transition.recommendation_reason,
+                "transition_reason": transition_reason,
+                "recommendation_reason": recommendation_reason,
                 "transition_source": transition.source,
                 "detail": {
                     "base_score": round(base_scores[node_id], 6),
@@ -1743,6 +1768,10 @@ def recommend_similar_places_with_scorer(
         )
         tag_cosine_score = clamp(score.tag_cosine_score)
         context_similarity_score = clamp(score.score)
+        similarity_reason = _activity_recommendation_phrase(
+            score.reason,
+            _place_recommendation_phrase(candidate),
+        )
         final_similarity_score = clamp(
             0.60 * tag_cosine_score + 0.40 * context_similarity_score
         )
@@ -1772,7 +1801,7 @@ def recommend_similar_places_with_scorer(
                 "context_similarity_score": round(
                     context_similarity_score, 6
                 ),
-                "similarity_reason": score.reason,
+                "similarity_reason": similarity_reason,
                 "similarity_source": score.source,
             }
         )

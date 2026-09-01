@@ -163,6 +163,9 @@ class SplitRecommendationProcessorTest(unittest.TestCase):
         self.assertEqual(
             response["similar_places"][0]["categorySmall"], "cafe-소분류"
         )
+        self.assertTrue(
+            response["similar_places"][0]["similarity_reason"].endswith("좋은 장소")
+        )
         self.assertNotIn("category", response["similar_places"][0])
 
     def test_next_processor_only_returns_next_places(self):
@@ -184,6 +187,9 @@ class SplitRecommendationProcessorTest(unittest.TestCase):
         self.assertEqual(response["next_places"][0]["categoryMedium"], "cafe")
         self.assertEqual(
             response["next_places"][0]["categorySmall"], "cafe-소분류"
+        )
+        self.assertTrue(
+            response["next_places"][0]["recommendation_reason"].endswith("좋은 장소")
         )
         self.assertNotIn("category", response["next_places"][0])
 
