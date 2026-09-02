@@ -452,7 +452,7 @@ class S3ReceiptApiTest(unittest.TestCase):
 
         with TestClient(app) as client:
             response = client.post(
-                "/ocr",
+                "/api/v1/ocr",
                 json={
                     "receiptUuid": "receipt-uuid-001",
                     "objectKey": "receipts/receipt-001.heic",

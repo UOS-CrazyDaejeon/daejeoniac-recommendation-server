@@ -261,13 +261,13 @@ Spring은 이미지 파일이나 S3 URL 전체를 보내지 않고 버킷 내부
 
 | 분석 방식 | 엔드포인트 |
 | --- | --- |
-| Spring OCR 연동 | `POST /ocr` |
+| Spring OCR 연동 | `POST /api/v1/ocr` |
 | Tesseract OCR | `POST /api/v1/receipts/analyze-from-s3` |
 | GPT-5 Mini | `POST /api/v1/receipts/analyze-gpt-mini-from-s3` |
 
 두 API의 JSON 요청 형식은 같다.
 
-Spring이 사용하는 기본 OCR 연동은 `POST /ocr`이다. 이미지 파일이나 S3 URL이
+Spring이 사용하는 기본 OCR 연동은 `POST /api/v1/ocr`이다. 이미지 파일이나 S3 URL이
 아닌 영수증 UUID와 버킷 내부 객체 키만 전달한다.
 
 ```json
@@ -279,7 +279,7 @@ Spring이 사용하는 기본 OCR 연동은 `POST /ocr`이다. 이미지 파일�
 
 OCR이 끝나면 Python 서버는 `SPRING_OCR_CALLBACK_URL`에 설정한 Spring의
 `POST /api/v1/receipts/ocr-result`로 아래 결과를 먼저 전송한다. 이 콜백이
-2xx가 아닌 경우 `/ocr`도 `502 OCR_RESULT_CALLBACK_FAILED`로 실패 처리한다.
+2xx가 아닌 경우 `/api/v1/ocr`도 `502 OCR_RESULT_CALLBACK_FAILED`로 실패 처리한다.
 
 ```json
 {
@@ -295,11 +295,11 @@ OCR이 끝나면 Python 서버는 `SPRING_OCR_CALLBACK_URL`에 설정한 Spring�
 못하면 `null`이다. `ocrStatus`는 기본값이 `COMPLETED`이며 Spring의 상태값에
 맞춰 환경변수로 변경할 수 있다.
 
-`/ocr` 호출 응답에도 전체 OCR 결과를 반환하지만, Spring DB 반영 기준은 위
+`/api/v1/ocr` 호출 응답에도 전체 OCR 결과를 반환하지만, Spring DB 반영 기준은 위
 콜백이다.
 
 배포 서버가 `http://3.39.230.42`라면 Spring의 호출 주소는
-`http://3.39.230.42/ocr`이다. 운영 환경에서는 이 서버를 Spring 서버만 접근할
+`http://3.39.230.42/api/v1/ocr`이다. 운영 환경에서는 이 서버를 Spring 서버만 접근할
 수 있는 보안 그룹 또는 내부 네트워크로 제한한다.
 
 ```json
@@ -673,7 +673,7 @@ EC2 보안 그룹의 인바운드는 다음처럼 제한한다.
 
 | 포트 | 소스 | 용도 |
 | --- | --- | --- |
-| TCP 80 | Spring EC2 보안 그룹 ID | Nginx Python API (`/api/*`, `/ocr`) |
+| TCP 80 | Spring EC2 보안 그룹 ID | Nginx Python API (`/api/*`) |
 | TCP 22 | 관리자 고정 IP | 초기 SSH 작업, SSM 사용 시 제거 가능 |
 
 TCP 8000은 외부에 열지 않는다. Compose가 `127.0.0.1:8000`에만

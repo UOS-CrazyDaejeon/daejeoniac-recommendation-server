@@ -552,7 +552,7 @@ def _completed_gpt_receipt_response(
 
 
 @app.post(
-    "/ocr",
+    "/api/v1/ocr",
     response_model=ReceiptSpringOcrResponse,
     tags=["영수증 분석"],
     summary="S3 영수증 OCR 분석(Spring 연동용)",
