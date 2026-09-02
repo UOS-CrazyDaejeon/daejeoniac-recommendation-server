@@ -29,10 +29,12 @@ import logging
 import math
 import os
 import re
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+from threading import Lock
 from typing import Any, Protocol, Sequence
 
 import networkx as nx
@@ -47,6 +49,8 @@ DEFAULT_MAX_MONTHLY_VISITORS = 50_000
 MAX_CANDIDATE_RADIUS_M = 1_000
 DEFAULT_LLM_CANDIDATE_LIMIT = 10
 DEFAULT_OPENAI_MODEL = "gpt-5-nano"
+DEFAULT_TEXT_EMBEDDING_MODEL = "text-embedding-3-small"
+DEFAULT_EMBEDDING_CACHE_SIZE = 2_000
 DUMMY_DATA_PATH = Path(__file__).with_name("dummy.json")
 KAKAO_DUMMY_DATA_PATH = Path(__file__).with_name("dummy_kakao.json")
 SCENARIO_DATA_PATH = Path(__file__).with_name("scenario_requests.json")
@@ -96,7 +100,7 @@ DEFAULT_BASE_WEIGHTS = {
     "monthly_visitors": 0.20,
     "selected_count": 0.10,
     "distance": 0.15,
-    "tag_similarity": 0.25,
+    "semantic_similarity": 0.25,
 }
 
 DEFAULT_HYBRID_WEIGHTS = {
@@ -403,9 +407,9 @@ def compute_static_scores(
 def compute_base_score(
     feature_scores: dict[str, float],
     weights: dict[str, float] | None = None,
-    tag_similarity_score: float = 0.0,
+    semantic_similarity_score: float = 0.0,
 ) -> float:
-    """혼잡도·숨은 정도·거리 feature를 하나의 기본 점수로 합친다."""
+    """혼잡도·숨은 정도·거리·의미 유사도를 하나의 기본 점수로 합친다."""
     selected_weights = weights or DEFAULT_BASE_WEIGHTS
     score = (
         selected_weights["congestion"] * feature_scores["congestion_score"]
@@ -414,7 +418,8 @@ def compute_base_score(
         + selected_weights["selected_count"]
         * feature_scores["selection_hidden_score"]
         + selected_weights["distance"] * feature_scores["distance_score"]
-        + selected_weights.get("tag_similarity", 0.0) * tag_similarity_score
+        + selected_weights.get("semantic_similarity", 0.0)
+        * semantic_similarity_score
     )
     return clamp(score)
 
@@ -527,6 +532,80 @@ class SimilarityScorer(Protocol):
         candidates: list[dict[str, Any]],
     ) -> dict[str, SimilarityScore]:
         """현재 장소와 후보의 분위기 유사도를 반환한다."""
+
+
+class EmbeddingProvider(Protocol):
+    def embed_texts(self, texts: Sequence[str]) -> list[list[float]]:
+        """입력 텍스트와 같은 순서의 임베딩 벡터를 반환한다."""
+
+
+class OpenAITextEmbeddingProvider:
+    """OpenAI 임베딩 호출을 배치·메모리 캐시로 감싼 제공자."""
+
+    def __init__(
+        self,
+        client: Any | None = None,
+        model: str = DEFAULT_TEXT_EMBEDDING_MODEL,
+        cache_size: int = DEFAULT_EMBEDDING_CACHE_SIZE,
+    ) -> None:
+        self.client = client
+        self.model = model
+        self.cache_size = max(cache_size, 0)
+        self._cache: OrderedDict[str, list[float]] = OrderedDict()
+        self._cache_lock = Lock()
+
+    def _get_client(self) -> Any:
+        if self.client is not None:
+            return self.client
+        try:
+            from openai import OpenAI
+        except ImportError as exc:
+            raise RuntimeError("openai 패키지가 설치되어 있지 않습니다") from exc
+        self.client = OpenAI()
+        return self.client
+
+    def embed_texts(self, texts: Sequence[str]) -> list[list[float]]:
+        normalized_texts = [" ".join(str(text).split()) for text in texts]
+        if any(not text for text in normalized_texts):
+            raise ValueError("임베딩 입력 텍스트는 비어 있을 수 없습니다")
+
+        missing: list[str] = []
+        vectors_by_text: dict[str, list[float]] = {}
+        with self._cache_lock:
+            for text in normalized_texts:
+                cached = self._cache.get(text)
+                if cached is None and text not in missing:
+                    missing.append(text)
+                elif cached is not None:
+                    self._cache.move_to_end(text)
+                    vectors_by_text[text] = cached
+
+        if missing:
+            response = self._get_client().embeddings.create(
+                model=self.model,
+                input=missing,
+            )
+            data = sorted(response.data, key=lambda item: int(item.index))
+            if len(data) != len(missing):
+                raise RuntimeError("임베딩 API가 모든 입력 벡터를 반환하지 않았습니다")
+            generated = {
+                text: [float(value) for value in item.embedding]
+                for text, item in zip(missing, data, strict=True)
+            }
+            with self._cache_lock:
+                for text, vector in generated.items():
+                    vectors_by_text[text] = vector
+                    if self.cache_size:
+                        self._cache[text] = vector
+                        self._cache.move_to_end(text)
+                while len(self._cache) > self.cache_size:
+                    self._cache.popitem(last=False)
+
+        return [vectors_by_text[text] for text in normalized_texts]
+
+
+_EMBEDDING_PROVIDERS: dict[str, OpenAITextEmbeddingProvider] = {}
+_EMBEDDING_PROVIDERS_LOCK = Lock()
 
 
 CATEGORY_TRANSITIONS: dict[str, dict[str, float]] = {
@@ -1123,6 +1202,118 @@ def _normalize_place_text(place: dict[str, Any] | None) -> dict[str, Any] | None
     return normalized
 
 
+def build_place_embedding_text(place: dict[str, Any]) -> str:
+    """장소의 분위기·활동 맥락을 잃지 않도록 일정한 텍스트 프로필을 만든다."""
+    categories = [
+        _one_line_text(place.get(key))
+        for key in (
+            "categoryLarge",
+            "categoryMedium",
+            "categorySmall",
+            "category_large",
+            "category_medium",
+            "category_small",
+        )
+        if _one_line_text(place.get(key))
+    ]
+    if not categories:
+        category = _one_line_text(place.get("category"))
+        if category and category.lower() != "unknown":
+            categories.append(category)
+
+    raw_tags = place.get("tags", [])
+    if isinstance(raw_tags, str):
+        raw_tags = raw_tags.split(",")
+    tags = normalize_tags(raw_tags)
+    rows = [f"장소명: {_one_line_text(place.get('name')) or '이름 없는 장소'}"]
+    if categories:
+        rows.append(f"카테고리: {', '.join(dict.fromkeys(categories))}")
+    description = _one_line_text(place.get("description"))
+    if description:
+        rows.append(f"설명: {description}")
+    if tags:
+        rows.append(f"분위기와 활동 태그: {', '.join(tags)}")
+    region = " ".join(
+        value
+        for value in (
+            _one_line_text(place.get("gu")),
+            _one_line_text(place.get("dong")),
+        )
+        if value
+    )
+    if region:
+        rows.append(f"지역: {region}")
+    return "\n".join(rows)
+
+
+def _is_text_embedding_enabled(use_embeddings: bool | None = None) -> bool:
+    if use_embeddings is not None:
+        return use_embeddings
+    raw_value = os.getenv("USE_TEXT_EMBEDDINGS")
+    if raw_value is None:
+        return bool(os.getenv("OPENAI_API_KEY"))
+    return raw_value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def create_default_text_embedding_provider(
+    use_embeddings: bool | None = None,
+    model: str | None = None,
+) -> EmbeddingProvider | None:
+    """키나 API 장애가 추천 전체 실패로 이어지지 않도록 선택적으로 활성화한다."""
+    if not _is_text_embedding_enabled(use_embeddings):
+        return None
+    if not os.getenv("OPENAI_API_KEY"):
+        LOGGER.warning("USE_TEXT_EMBEDDINGS is enabled but OPENAI_API_KEY is missing")
+        return None
+
+    selected_model = model or os.getenv(
+        "TEXT_EMBEDDING_MODEL",
+        DEFAULT_TEXT_EMBEDDING_MODEL,
+    )
+    try:
+        cache_size = int(
+            os.getenv("TEXT_EMBEDDING_CACHE_SIZE", DEFAULT_EMBEDDING_CACHE_SIZE)
+        )
+    except ValueError:
+        cache_size = DEFAULT_EMBEDDING_CACHE_SIZE
+    cache_size = max(cache_size, 0)
+
+    with _EMBEDDING_PROVIDERS_LOCK:
+        provider = _EMBEDDING_PROVIDERS.get(selected_model)
+        if provider is None:
+            provider = OpenAITextEmbeddingProvider(
+                model=selected_model,
+                cache_size=cache_size,
+            )
+            _EMBEDDING_PROVIDERS[selected_model] = provider
+        return provider
+
+
+def compute_pairwise_embedding_similarity_scores(
+    current_place: dict[str, Any],
+    candidates: Sequence[dict[str, Any]],
+    embedding_provider: EmbeddingProvider | None,
+) -> dict[str, float]:
+    """선택 장소와 후보의 텍스트 임베딩 코사인 유사도를 계산한다."""
+    if embedding_provider is None or not candidates:
+        return {}
+    texts = [build_place_embedding_text(current_place)] + [
+        build_place_embedding_text(candidate) for candidate in candidates
+    ]
+    try:
+        vectors = embedding_provider.embed_texts(texts)
+        if len(vectors) != len(texts):
+            raise RuntimeError("임베딩 벡터 개수가 입력과 일치하지 않습니다")
+        current_vector = vectors[0]
+        return {
+            str(candidate["id"]): cosine_similarity(current_vector, vector)
+            for candidate, vector in zip(candidates, vectors[1:], strict=True)
+        }
+    except Exception as exc:
+        LOGGER.warning("Text embedding similarity failed; using tag fallback: %s", exc)
+        return {}
+
+
 def create_default_transition_scorer(
     use_llm: bool | None = None,
     model: str | None = None,
@@ -1233,18 +1424,19 @@ def preselect_candidates(
     base_weights: dict[str, float] | None = None,
     max_congestion: float = DEFAULT_MAX_CONGESTION,
     max_monthly_visitors: int = DEFAULT_MAX_MONTHLY_VISITORS,
-    tag_similarity_scores: dict[str, float] | None = None,
+    semantic_similarity_scores: dict[str, float] | None = None,
+    semantic_similarity_source: str = "tag_cosine_fallback",
 ) -> tuple[list[dict[str, Any]], dict[str, float], dict[str, float]]:
     """비싼 LLM 호출 전에 코드 점수로 후보를 최대 limit개까지 줄인다."""
     selected_set = set(selected_history)
     candidate_ids = [node_id for node_id in graph.nodes() if node_id not in selected_set]
     normalized_ppr = normalize_candidate_scores(ppr_scores, candidate_ids)
-    tag_similarity_scores = tag_similarity_scores or {}
+    semantic_similarity_scores = semantic_similarity_scores or {}
     base_scores = {
         node_id: compute_base_score(
             static_scores[node_id],
             base_weights,
-            tag_similarity_scores.get(node_id, 0.0),
+            semantic_similarity_scores.get(node_id, 0.0),
         )
         for node_id in candidate_ids
     }
@@ -1273,9 +1465,10 @@ def preselect_candidates(
                 "monthly_visitors": attrs["monthly_visitors"],
                 "selected_count": attrs["selected_count"],
                 "base_score": round(base_scores[node_id], 6),
-                "tag_similarity_score": round(
-                    tag_similarity_scores.get(node_id, 0.0), 6
+                "semantic_similarity_score": round(
+                    semantic_similarity_scores.get(node_id, 0.0), 6
                 ),
+                "semantic_similarity_source": semantic_similarity_source,
                 "ppr_score": round(normalized_ppr[node_id], 6),
                 "policy_passed": _policy_passed(
                     attrs,
@@ -1364,12 +1557,75 @@ def compute_tag_similarity_scores(
     }
 
 
+def compute_recent_embedding_similarity_scores(
+    graph: nx.Graph,
+    selected_history: Sequence[str],
+    embedding_provider: EmbeddingProvider | None,
+    recent_places: Sequence[dict[str, Any]] | None = None,
+    current_place: dict[str, Any] | None = None,
+    decay_rate: float = 0.5,
+) -> dict[str, float]:
+    """최근 방문 문맥과 후보의 장소 프로필 임베딩 유사도를 계산한다."""
+    if embedding_provider is None or not selected_history:
+        return {}
+
+    preference_places: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for place in list(recent_places or [])[-4:]:
+        place_id = str(place.get("id", ""))
+        if place_id and place_id in seen_ids:
+            continue
+        preference_places.append(place)
+        if place_id:
+            seen_ids.add(place_id)
+    if current_place is not None:
+        current_id = str(current_place.get("id", ""))
+        if not current_id or current_id not in seen_ids:
+            preference_places.append(current_place)
+    if not preference_places:
+        preference_places = _recent_places_from_graph(graph, selected_history)
+    if not preference_places:
+        return {}
+
+    node_ids = list(graph.nodes())
+    candidate_places = [dict(graph.nodes[node_id], id=node_id) for node_id in node_ids]
+    texts = [build_place_embedding_text(place) for place in preference_places] + [
+        build_place_embedding_text(place) for place in candidate_places
+    ]
+    try:
+        vectors = embedding_provider.embed_texts(texts)
+        if len(vectors) != len(texts):
+            raise RuntimeError("임베딩 벡터 개수가 입력과 일치하지 않습니다")
+        preference_vectors = vectors[: len(preference_places)]
+        candidate_vectors = vectors[len(preference_places) :]
+        vector_size = len(preference_vectors[0])
+        user_vector = [0.0] * vector_size
+        count = len(preference_vectors)
+        for index, vector in enumerate(preference_vectors):
+            if len(vector) != vector_size:
+                raise RuntimeError("임베딩 벡터 차원이 일치하지 않습니다")
+            weight = decay_rate ** (count - 1 - index)
+            for vector_index, value in enumerate(vector):
+                user_vector[vector_index] += weight * value
+        return {
+            node_id: cosine_similarity(user_vector, vector)
+            for node_id, vector in zip(node_ids, candidate_vectors, strict=True)
+        }
+    except Exception as exc:
+        LOGGER.warning(
+            "Recent-place text embedding similarity failed; using tag fallback: %s",
+            exc,
+        )
+        return {}
+
+
 def recommend_next_places_hybrid(
     graph: nx.Graph,
     static_scores: dict[str, dict[str, float]],
     ppr_scores: dict[str, float],
     selected_history: list[str],
     transition_scorer: TransitionScorer | None = None,
+    embedding_provider: EmbeddingProvider | None = None,
     recent_places: list[dict[str, Any]] | None = None,
     current_time: str | None = None,
     user_preferences: str = "조용하고 덜 알려진 장소",
@@ -1382,19 +1638,33 @@ def recommend_next_places_hybrid(
     max_congestion: float = DEFAULT_MAX_CONGESTION,
     max_monthly_visitors: int = DEFAULT_MAX_MONTHLY_VISITORS,
 ) -> list[dict[str, Any]]:
-    """코드 기본 점수, PPR, LLM 전이 점수를 결합해 최종 장소를 추천한다."""
+    """의미 임베딩·기본 점수·PPR·LLM 전이 점수를 결합해 다음 장소를 추천한다."""
     tag_similarity_scores = compute_tag_similarity_scores(
         graph=graph,
         selected_history=selected_history,
         recent_places=recent_places,
         current_place=current_place,
     )
+    embedding_similarity_scores = compute_recent_embedding_similarity_scores(
+        graph=graph,
+        selected_history=selected_history,
+        embedding_provider=embedding_provider,
+        recent_places=recent_places,
+        current_place=current_place,
+    )
+    if embedding_similarity_scores:
+        semantic_similarity_scores = embedding_similarity_scores
+        semantic_similarity_source = "text_embedding"
+    else:
+        semantic_similarity_scores = tag_similarity_scores
+        semantic_similarity_source = "tag_cosine_fallback"
     candidates, base_scores, normalized_ppr = preselect_candidates(
         graph=graph,
         static_scores=static_scores,
         ppr_scores=ppr_scores,
         selected_history=selected_history,
-        tag_similarity_scores=tag_similarity_scores,
+        semantic_similarity_scores=semantic_similarity_scores,
+        semantic_similarity_source=semantic_similarity_source,
         limit=max(llm_candidate_limit, top_k),
         base_weights=base_weights,
         max_congestion=max_congestion,
@@ -1478,7 +1748,12 @@ def recommend_next_places_hybrid(
                 "transition_source": transition.source,
                 "detail": {
                     "base_score": round(base_scores[node_id], 6),
-                    "tag_similarity_score": candidate["tag_similarity_score"],
+                    "semantic_similarity_score": candidate[
+                        "semantic_similarity_score"
+                    ],
+                    "semantic_similarity_source": candidate[
+                        "semantic_similarity_source"
+                    ],
                     "congestion_score": round(
                         feature_scores["congestion_score"], 6
                     ),
@@ -1742,10 +2017,11 @@ def recommend_similar_places_with_scorer(
     current_place: dict[str, Any],
     candidates: list[dict[str, Any]],
     scorer: SimilarityScorer,
+    embedding_provider: EmbeddingProvider | None = None,
     excluded_place_ids: Sequence[str] = (),
     top_k: int = SIMILAR_TOP_K,
 ) -> list[dict[str, Any]]:
-    """scorer가 계산한 유사도와 이유로 비슷한 장소를 정렬한다."""
+    """의미 임베딩을 우선하고, 불가능하면 태그 코사인으로 유사 장소를 정렬한다."""
     current_id = str(current_place["id"])
     excluded = {str(place_id) for place_id in excluded_place_ids} | {current_id}
     eligible_candidates = [
@@ -1754,6 +2030,11 @@ def recommend_similar_places_with_scorer(
         if str(candidate["id"]) not in excluded
     ]
     scores = scorer.score_candidates(current_place, eligible_candidates)
+    embedding_scores = compute_pairwise_embedding_similarity_scores(
+        current_place,
+        eligible_candidates,
+        embedding_provider,
+    )
 
     results: list[dict[str, Any]] = []
     for candidate in eligible_candidates:
@@ -1768,12 +2049,19 @@ def recommend_similar_places_with_scorer(
         )
         tag_cosine_score = clamp(score.tag_cosine_score)
         context_similarity_score = clamp(score.score)
+        embedding_similarity_score = embedding_scores.get(place_id)
+        if embedding_similarity_score is None:
+            semantic_similarity_score = tag_cosine_score
+            semantic_similarity_source = "tag_cosine_fallback"
+        else:
+            semantic_similarity_score = clamp(embedding_similarity_score)
+            semantic_similarity_source = "text_embedding"
         similarity_reason = _activity_recommendation_phrase(
             score.reason,
             _place_recommendation_phrase(candidate),
         )
         final_similarity_score = clamp(
-            0.60 * tag_cosine_score + 0.40 * context_similarity_score
+            0.60 * semantic_similarity_score + 0.40 * context_similarity_score
         )
         if "distance_m" in candidate:
             distance_m = float(candidate["distance_m"])
@@ -1798,6 +2086,12 @@ def recommend_similar_places_with_scorer(
                 "distance_m": round(distance_m, 1),
                 "similarity_score": round(final_similarity_score, 6),
                 "tag_cosine_score": round(tag_cosine_score, 6),
+                "embedding_similarity_score": (
+                    round(embedding_similarity_score, 6)
+                    if embedding_similarity_score is not None
+                    else None
+                ),
+                "semantic_similarity_source": semantic_similarity_source,
                 "context_similarity_score": round(
                     context_similarity_score, 6
                 ),
@@ -1896,6 +2190,7 @@ def _eligible_candidates_within_radius(
 def process_spring_similar_places_request(
     request: dict[str, Any],
     similarity_scorer: SimilarityScorer | None = None,
+    embedding_provider: EmbeddingProvider | None = None,
 ) -> dict[str, Any]:
     """선택한 장소와 비슷한 장소만 계산한다."""
     _validate_split_recommendation_request(
@@ -1915,6 +2210,9 @@ def process_spring_similar_places_request(
         current_place=selected_place,
         candidates=eligible_candidates,
         scorer=scorer,
+        embedding_provider=(
+            embedding_provider or create_default_text_embedding_provider()
+        ),
         top_k=SIMILAR_TOP_K,
     )
     return {
@@ -1927,6 +2225,7 @@ def process_spring_similar_places_request(
 def process_spring_next_places_request(
     request: dict[str, Any],
     transition_scorer: TransitionScorer | None = None,
+    embedding_provider: EmbeddingProvider | None = None,
 ) -> dict[str, Any]:
     """현재 위치와 최근 선택 흐름을 사용해 다음 장소만 계산한다."""
     _validate_split_recommendation_request(
@@ -1973,6 +2272,9 @@ def process_spring_next_places_request(
         ppr_scores=ppr_scores,
         selected_history=selected_history,
         transition_scorer=transition_scorer,
+        embedding_provider=(
+            embedding_provider or create_default_text_embedding_provider()
+        ),
         recent_places=[
             _normalize_place_text(place) for place in request["recent_places"][-4:]
         ],
@@ -2235,7 +2537,7 @@ def run_demo_scenario(
             f"{rank}. {recommendation['name']} ({recommendation['category']}) "
             f"- 최종: {recommendation['final_score']:.4f} "
             f"/ 기본: {detail['base_score']:.4f} "
-            f"/ 태그유사도: {detail['tag_similarity_score']:.4f} "
+            f"/ 의미유사도: {detail['semantic_similarity_score']:.4f} "
             f"/ 전이: {detail['transition_score']:.4f} "
             f"/ PPR: {detail['ppr_score']:.4f} "
             f"/ 거리: {detail['distance_m']:.0f}m "

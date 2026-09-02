@@ -28,8 +28,10 @@ Content-Type: application/json
 ```
 
 `selectedPlace`가 유사도 비교 기준이고 `nearbyPlaces`가 비교 후보 목록이다.
-장소의 카테고리, 태그, 설명과 후보별 거리를 사용하며, OpenAI가 활성화되어 있으면
-문맥 유사도도 함께 평가한다. 이 요청에는 최근 이동 이력이나 현재 시각이 필요 없다.
+OpenAI 텍스트 임베딩이 활성화되어 있으면 장소명·카테고리·설명·태그로 만든 장소
+프로필의 코사인 유사도를 우선 사용한다. 임베딩을 사용할 수 없으면 기존 태그 코사인
+유사도로 자동 대체하며, OpenAI 문맥 유사도 평가도 함께 반영한다. 이 요청에는 최근
+이동 이력이나 현재 시각이 필요 없다.
 `nearbyPlaces`에는 배열 또는 Spring Page 응답 전체를 넣을 수 있으며, Page의 경우
 `content` 외의 메타데이터는 무시한다.
 
@@ -493,8 +495,11 @@ public Mono<FaceMosaicResponse> mosaicFaces(String s3Key, Long userId) {
 .venv/bin/uvicorn recommendation_api.main:app --host 127.0.0.1 --port 8000
 ```
 
-OpenAI를 사용할 때만 `OPENAI_API_KEY`를 설정한다. 키가 없으면 기존
-추천 코드의 fallback scorer가 사용되지만 GPT 영수증 엔드포인트는 `503`을
+OpenAI를 사용할 때만 `OPENAI_API_KEY`를 설정한다. 키가 있으면 텍스트 임베딩 추천도
+기본 활성화된다. `USE_TEXT_EMBEDDINGS=0`으로 끌 수 있고,
+`TEXT_EMBEDDING_MODEL=text-embedding-3-small`, `TEXT_EMBEDDING_CACHE_SIZE=2000`으로
+모델과 컨테이너 메모리 캐시 크기를 조정할 수 있다. 키가 없거나 임베딩 호출에 실패하면
+기존 태그 코사인 fallback scorer가 사용되지만 GPT 영수증 엔드포인트는 `503`을
 반환한다. `RECEIPT_VISION_MODEL`의 기본값은 `gpt-5-mini`, 이미지 세부 수준인
 `RECEIPT_VISION_DETAIL`의 기본값은 OCR에 적합한 `high`다.
 

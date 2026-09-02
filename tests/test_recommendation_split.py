@@ -1,9 +1,11 @@
 import unittest
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
 from recommend_llm import (
     HeuristicSimilarityScorer,
+    OpenAITextEmbeddingProvider,
     OpenAISimilarityScorer,
     SimilarityScore,
     TransitionScore,
@@ -88,6 +90,32 @@ class DeterministicTransitionScorer:
         }
 
 
+class DeterministicEmbeddingProvider:
+    def embed_texts(self, texts):
+        vectors = []
+        for text in texts:
+            if "후보 장소 1" in text:
+                vectors.append([0.0, 1.0])
+            else:
+                vectors.append([1.0, 0.0])
+        return vectors
+
+
+class RecordingEmbeddingClient:
+    def __init__(self):
+        self.calls = []
+        self.embeddings = self
+
+    def create(self, *, model, input):
+        self.calls.append({"model": model, "input": input})
+        return SimpleNamespace(
+            data=[
+                SimpleNamespace(index=index, embedding=[float(index + 1), 1.0])
+                for index, _ in enumerate(input)
+            ]
+        )
+
+
 class EmptySimilarityResponseClient:
     class responses:
         @staticmethod
@@ -126,6 +154,23 @@ def next_request() -> dict:
 
 
 class SplitRecommendationProcessorTest(unittest.TestCase):
+    def test_openai_embedding_provider_batches_and_caches_place_profiles(self):
+        client = RecordingEmbeddingClient()
+        provider = OpenAITextEmbeddingProvider(
+            client=client,
+            model="text-embedding-3-small",
+            cache_size=10,
+        )
+
+        vectors = provider.embed_texts(["따뜻한 카페", "포근한 베이커리", "따뜻한 카페"])
+        provider.embed_texts(["포근한 베이커리"])
+
+        self.assertEqual(len(client.calls), 1)
+        self.assertEqual(
+            client.calls[0]["input"], ["따뜻한 카페", "포근한 베이커리"]
+        )
+        self.assertEqual(vectors[0], vectors[2])
+
     def test_heuristic_similarity_scores_keep_internal_string_keys(self):
         scores = HeuristicSimilarityScorer().score_candidates(
             SELECTED_PLACE,
@@ -168,10 +213,28 @@ class SplitRecommendationProcessorTest(unittest.TestCase):
         )
         self.assertNotIn("category", response["similar_places"][0])
 
+    def test_similar_processor_prefers_text_embedding_similarity(self):
+        request = similar_request()
+        request["candidates"] = request["candidates"][:2]
+
+        response = process_spring_similar_places_request(
+            request,
+            similarity_scorer=DeterministicSimilarityScorer(),
+            embedding_provider=DeterministicEmbeddingProvider(),
+        )
+
+        self.assertEqual(response["similar_places"][0]["place_id"], 2)
+        self.assertEqual(
+            response["similar_places"][0]["semantic_similarity_source"],
+            "text_embedding",
+        )
+        self.assertEqual(response["similar_places"][0]["embedding_similarity_score"], 1.0)
+
     def test_next_processor_only_returns_next_places(self):
         response = process_spring_next_places_request(
             next_request(),
             transition_scorer=DeterministicTransitionScorer(),
+            embedding_provider=DeterministicEmbeddingProvider(),
         )
 
         self.assertEqual(response["current_place_id"], 100)
@@ -190,6 +253,10 @@ class SplitRecommendationProcessorTest(unittest.TestCase):
         )
         self.assertTrue(
             response["next_places"][0]["recommendation_reason"].endswith("좋은 장소")
+        )
+        self.assertEqual(
+            response["next_places"][0]["detail"]["semantic_similarity_source"],
+            "text_embedding",
         )
         self.assertNotIn("category", response["next_places"][0])
 
