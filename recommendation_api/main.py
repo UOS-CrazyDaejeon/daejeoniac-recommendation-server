@@ -11,6 +11,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 
 from recommend_llm import (
+    EmbeddingProvider,
+    create_default_text_embedding_provider,
     process_spring_next_places_request,
     process_spring_recommendation_request,
     process_spring_similar_places_request,
@@ -25,6 +27,7 @@ from recommendation_api.face_mosaic_s3 import (
     load_s3_face_image,
     store_s3_mosaic_image,
 )
+from recommendation_api.natural_search import search_places_by_tags
 from recommendation_api.receipt_gpt import (
     ReceiptVisionConfigurationError,
     ReceiptVisionUpstreamError,
@@ -49,6 +52,8 @@ from recommendation_api.schemas import (
     FaceMosaicResponse,
     NextPlacesRequest,
     NextPlacesResponse,
+    NaturalLanguageSearchRequest,
+    NaturalLanguageSearchResponse,
     ReceiptOcrFieldsResponse,
     ReceiptOcrRequest,
     ReceiptSpringOcrResponse,
@@ -94,6 +99,10 @@ app = FastAPI(
         {
             "name": "장소 추천",
             "description": "선택 장소와 비슷한 장소 또는 다음 이동 장소를 추천합니다.",
+        },
+        {
+            "name": "장소 검색",
+            "description": "자연어 검색 문장을 장소 태그와 비교해 장소를 찾습니다.",
         },
         {
             "name": "영수증 분석",
@@ -219,6 +228,11 @@ def get_next_places_processor() -> RecommendationProcessor:
     return process_spring_next_places_request
 
 
+def get_natural_search_embedding_provider() -> EmbeddingProvider | None:
+    """추천과 같은 text-embedding-3-small 제공자·캐시를 자연어 검색에도 사용한다."""
+    return create_default_text_embedding_provider()
+
+
 def get_receipt_processor() -> ReceiptProcessor:
     return lambda image_bytes, language: analyze_receipt_image_bytes(
         image_bytes,
@@ -337,6 +351,51 @@ def create_similar_place_recommendations(
             code="INTERNAL_SERVER_ERROR",
             message="비슷한 장소 추천 처리 중 오류가 발생했습니다",
             request_id=f"similar-{request.selectedPlace.id}",
+        )
+
+
+@app.post(
+    "/api/v1/recommendations/natural-search",
+    response_model=NaturalLanguageSearchResponse,
+    tags=["장소 검색"],
+    summary="태그 기반 자연어 장소 검색",
+    description=(
+        "검색 문장을 태그와 직접 비교해 장소를 찾습니다. Spring이 조회한 장소 배열 또는 "
+        "Page 객체의 content를 places에 전달하세요. 외부 LLM 호출 없이 동작하며 "
+        "matched_tags로 검색 근거를 함께 반환합니다."
+    ),
+    response_description="태그 매칭 점수순 자연어 검색 결과",
+    responses={
+        422: {"description": "요청 형식 검증 오류"},
+        500: {"description": "장소 검색 처리 서버 오류"},
+    },
+)
+def search_places_with_natural_language(
+    request: NaturalLanguageSearchRequest,
+    embedding_provider: EmbeddingProvider | None = Depends(
+        get_natural_search_embedding_provider
+    ),
+) -> dict[str, Any] | JSONResponse:
+    try:
+        response = search_places_by_tags(
+            request.query,
+            [place.model_dump(mode="json") for place in request.places],
+            # 이전 호출부가 topK=10을 보내더라도 검색 결과는 최대 5개로 제한한다.
+            top_k=min(request.topK, 5),
+            embedding_provider=embedding_provider,
+        )
+        _log_recommendation_result(
+            "/api/v1/recommendations/natural-search",
+            response,
+        )
+        return response
+    except Exception:
+        logger.exception("Unexpected natural-language search failure query=%s", request.query)
+        return _error_response(
+            status_code=500,
+            code="INTERNAL_SERVER_ERROR",
+            message="자연어 장소 검색 중 오류가 발생했습니다",
+            request_id=None,
         )
 
 

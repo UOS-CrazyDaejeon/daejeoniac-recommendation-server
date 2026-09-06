@@ -71,7 +71,11 @@ class Place(BaseModel):
         if "selected_count" not in normalized and normalized.get("selectedCount") is not None:
             normalized["selected_count"] = normalized["selectedCount"]
         if "description" not in normalized:
-            normalized["description"] = normalized.get("placeDescription") or ""
+            normalized["description"] = (
+                normalized.get("placeDescription")
+                or normalized.get("place_description")
+                or ""
+            )
 
         for camel_name, snake_name in (
             ("categoryLarge", "category_large"),
@@ -271,6 +275,78 @@ class SimilarPlacesResponse(BaseModel):
     generated_at: str
     selected_place_id: int
     similar_places: list[dict[str, Any]]
+
+
+class TagSearchPlace(Place):
+    """자연어 태그 검색용 장소. 좌표 없이도 태그 검색은 가능하다."""
+
+    latitude: float = 0.0
+    longitude: float = 0.0
+
+
+TagSearchCandidates = Annotated[
+    list[TagSearchPlace],
+    BeforeValidator(_unwrap_spring_page_content),
+    Field(min_length=1),
+]
+
+
+class NaturalLanguageSearchRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "examples": [
+                {
+                    "query": "아이와 야경을 보기 좋은 곳",
+                    "places": [
+                        {
+                            "place_id": 2,
+                            "place_name": "대전오월드",
+                            "category_large": "여행",
+                            "category_medium": "관광,명소",
+                            "category_small": "테마파크",
+                            "place_description": "동물원과 놀이공원을 함께 즐길 수 있는 테마파크",
+                            "tag": "동물원,놀이공원,사파리,가족나들이,야외체험",
+                        },
+                        {
+                            "place_id": 5,
+                            "place_name": "으능정이스카이로드",
+                            "category_large": "여행",
+                            "category_medium": "관광,명소",
+                            "category_small": "관광지",
+                            "tag": "원도심,미디어아트,야경,포토스팟,데이트",
+                        },
+                    ],
+                    "top_k": 5,
+                }
+            ]
+        },
+    )
+
+    query: str = Field(
+        min_length=2,
+        max_length=200,
+        validation_alias=AliasChoices("query", "keyword", "searchQuery"),
+        description="사용자가 입력한 자연어 검색 문장",
+        examples=["따뜻한 분위기에서 빵 먹기 좋은 곳"],
+    )
+    places: TagSearchCandidates = Field(
+        validation_alias=AliasChoices("places", "candidates", "nearbyPlaces"),
+        description="Spring이 조회한 전체 장소 목록 또는 Page 객체",
+    )
+    topK: int = Field(
+        default=5,
+        ge=1,
+        le=100,
+        validation_alias=AliasChoices("top_k", "topK"),
+        description="요청할 최대 장소 수(입력값과 무관하게 서버는 최대 5개만 반환)",
+    )
+
+
+class NaturalLanguageSearchResponse(BaseModel):
+    query: str
+    total_count: int
+    search_places: list[dict[str, Any]]
 
 
 class NextPlacesContext(BaseModel):

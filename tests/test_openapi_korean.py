@@ -12,7 +12,7 @@ class KoreanOpenApiTest(unittest.TestCase):
         self.assertIn("내부 API", spec["info"]["description"])
         self.assertEqual(
             [tag["name"] for tag in spec["tags"]],
-            ["장소 추천", "영수증 분석", "이미지 비식별화"],
+            ["장소 추천", "장소 검색", "영수증 분석", "이미지 비식별화"],
         )
 
         expected_summaries = {
@@ -25,6 +25,10 @@ class KoreanOpenApiTest(unittest.TestCase):
                 "/api/v1/recommendations/next-places",
                 "post",
             ): "다음 이동 장소 추천",
+            (
+                "/api/v1/recommendations/natural-search",
+                "post",
+            ): "태그 기반 자연어 장소 검색",
             ("/api/v1/receipts/analyze", "post"): "영수증 OCR 분석",
             ("/api/v1/ocr", "post"): "S3 영수증 OCR 분석(Spring 연동용)",
             (
