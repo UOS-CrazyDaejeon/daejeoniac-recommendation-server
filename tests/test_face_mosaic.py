@@ -9,7 +9,6 @@ from fastapi.testclient import TestClient
 
 from recommendation_api.face_mosaic import (
     FaceMosaicResult,
-    FaceNotDetectedError,
     mosaic_face_image_bytes,
 )
 from recommendation_api.face_mosaic_s3 import store_s3_mosaic_image
@@ -67,13 +66,17 @@ class FaceMosaicProcessorTest(unittest.TestCase):
         self.assertTrue(result.image_bytes.startswith(b"\xff\xd8"))
         self.assertEqual(detector.input_size, (120, 80))
 
-    def test_fails_closed_when_no_face_is_detected(self):
-        with self.assertRaises(FaceNotDetectedError):
-            mosaic_face_image_bytes(
-                jpeg_bytes(),
-                "image/jpeg",
-                detector=FakeDetector(None),
-            )
+    def test_returns_jpeg_when_no_face_is_detected(self):
+        result = mosaic_face_image_bytes(
+            jpeg_bytes(),
+            "image/jpeg",
+            detector=FakeDetector(None),
+        )
+
+        self.assertEqual(result.face_count, 0)
+        self.assertEqual(result.content_type, "image/jpeg")
+        self.assertEqual((result.width, result.height), (120, 80))
+        self.assertTrue(result.image_bytes.startswith(b"\xff\xd8"))
 
 
 class FaceMosaicApiTest(unittest.TestCase):

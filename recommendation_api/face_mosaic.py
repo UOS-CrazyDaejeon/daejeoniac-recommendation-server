@@ -31,13 +31,6 @@ class FaceImageError(FaceMosaicError):
     error_code = "INVALID_FACE_IMAGE"
 
 
-class FaceNotDetectedError(FaceMosaicError):
-    """원본을 그대로 공개하는 일을 막기 위해 검출 0건을 실패로 처리한다."""
-
-    status_code = 422
-    error_code = "FACE_NOT_DETECTED"
-
-
 @dataclass(frozen=True)
 class FaceMosaicResult:
     image_bytes: bytes
@@ -252,11 +245,6 @@ def _mosaic_face_image_bytes(
     image = _decode_image(image_bytes)
     selected_detector = detector or configured_face_detector()
     boxes = _detect_face_boxes(image, selected_detector)
-    if not boxes:
-        raise FaceNotDetectedError(
-            "얼굴을 검출하지 못해 원본 이미지를 저장하지 않았습니다."
-        )
-
     _blur_faces(image, boxes)
     try:
         import cv2

@@ -629,7 +629,7 @@ class FaceMosaicResponse(BaseModel):
     sourceS3Key: str
     outputS3Key: str
     contentType: Literal["image/jpeg"] = "image/jpeg"
-    faceCount: int = Field(ge=1)
+    faceCount: int = Field(ge=0)
     width: int = Field(gt=0)
     height: int = Field(gt=0)
     processedAt: str
