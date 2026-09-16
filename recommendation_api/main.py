@@ -28,6 +28,10 @@ from recommendation_api.face_mosaic_s3 import (
     store_s3_mosaic_image,
 )
 from recommendation_api.natural_search import search_places_by_tags
+from recommendation_api.natural_search import (
+    SearchKeywordExtractor,
+    create_default_search_keyword_extractor,
+)
 from recommendation_api.receipt_gpt import (
     ReceiptVisionConfigurationError,
     ReceiptVisionUpstreamError,
@@ -233,6 +237,11 @@ def get_natural_search_embedding_provider() -> EmbeddingProvider | None:
     return create_default_text_embedding_provider()
 
 
+def get_natural_search_keyword_extractor() -> SearchKeywordExtractor | None:
+    """gpt-5-nano로 검색 대상 핵심어를 추출한다. 비활성화 시 규칙 기반으로 대체한다."""
+    return create_default_search_keyword_extractor()
+
+
 def get_receipt_processor() -> ReceiptProcessor:
     return lambda image_bytes, language: analyze_receipt_image_bytes(
         image_bytes,
@@ -361,7 +370,8 @@ def create_similar_place_recommendations(
     summary="태그 기반 자연어 장소 검색",
     description=(
         "검색 문장을 태그와 직접 비교해 장소를 찾습니다. Spring이 조회한 장소 배열 또는 "
-        "Page 객체의 content를 places에 전달하세요. 외부 LLM 호출 없이 동작하며 "
+        "Page 객체의 content를 places에 전달하세요. gpt-5-nano 검색어 추출이 활성화되면 "
+        "검색 대상 핵심어를 먼저 정규화하며, 호출에 실패하거나 비활성화된 경우 규칙 기반으로 대체합니다. "
         "matched_tags로 검색 근거를 함께 반환합니다."
     ),
     response_description="태그 매칭 점수순 자연어 검색 결과",
@@ -375,6 +385,9 @@ def search_places_with_natural_language(
     embedding_provider: EmbeddingProvider | None = Depends(
         get_natural_search_embedding_provider
     ),
+    keyword_extractor: SearchKeywordExtractor | None = Depends(
+        get_natural_search_keyword_extractor
+    ),
 ) -> dict[str, Any] | JSONResponse:
     try:
         response = search_places_by_tags(
@@ -383,6 +396,7 @@ def search_places_with_natural_language(
             # 이전 호출부가 topK=10을 보내더라도 검색 결과는 최대 5개로 제한한다.
             top_k=min(request.topK, 5),
             embedding_provider=embedding_provider,
+            keyword_extractor=keyword_extractor,
         )
         _log_recommendation_result(
             "/api/v1/recommendations/natural-search",

@@ -3,8 +3,16 @@ import unittest
 from fastapi.testclient import TestClient
 
 from recommendation_api.main import app
-from recommendation_api.main import get_natural_search_embedding_provider
-from recommendation_api.natural_search import _query_tokens, _search_query_tags, search_places_by_tags
+from recommendation_api.main import (
+    get_natural_search_embedding_provider,
+    get_natural_search_keyword_extractor,
+)
+from recommendation_api.natural_search import (
+    OpenAISearchKeywordExtractor,
+    _query_tokens,
+    _search_query_tags,
+    search_places_by_tags,
+)
 
 
 PLACES = [
@@ -55,6 +63,26 @@ class DeterministicEmbeddingProvider:
         return vectors
 
 
+class DeterministicKeywordExtractor:
+    def extract_keywords(self, query):
+        self.last_query = query
+        return ["베이커리"]
+
+
+class KeywordExtractionResponseClient:
+    def __init__(self):
+        self.responses = self
+        self.request = None
+
+    def create(self, **kwargs):
+        self.request = kwargs
+        return type(
+            "Response",
+            (),
+            {"output_text": '{"keywords":["베이커리"]}'},
+        )()
+
+
 class NaturalSearchTest(unittest.TestCase):
     def test_searches_with_intent_tags_and_returns_match_evidence(self):
         response = search_places_by_tags("아이와 동물을 보고 싶은 곳", PLACES)
@@ -82,11 +110,13 @@ class NaturalSearchTest(unittest.TestCase):
         ]
 
         response = search_places_by_tags("주변 비슷한 베이커리집으로 찾아줘", places)
+        query_tokens = _query_tokens("주변 비슷한 베이커리집으로 찾아줘")
 
         self.assertEqual(response["total_count"], 1)
         self.assertEqual(response["search_places"][0]["place_id"], 83)
         self.assertIn("베이커리", response["search_places"][0]["matched_tags"])
         self.assertNotIn("전시", response["search_places"][0]["matched_tags"])
+        self.assertEqual(query_tokens, ["베이커리집", "베이커리"])
         self.assertNotIn("미술전시", _search_query_tags(_query_tokens("비슷한")))
 
     def test_keeps_explicit_single_syllable_intents(self):
@@ -94,6 +124,29 @@ class NaturalSearchTest(unittest.TestCase):
 
         self.assertIn("미술전시", query_tags)
         self.assertIn("베이커리", query_tags)
+
+    def test_extracts_only_search_target_with_gpt_nano_schema(self):
+        client = KeywordExtractionResponseClient()
+        extractor = OpenAISearchKeywordExtractor(client=client)
+
+        keywords = extractor.extract_keywords("주변 비슷한 베이커리집으로 찾아줘")
+
+        self.assertEqual(keywords, ["베이커리"])
+        self.assertEqual(client.request["model"], "gpt-5-nano")
+        self.assertTrue(client.request["text"]["format"]["strict"])
+
+    def test_uses_extracted_keywords_for_tag_search(self):
+        extractor = DeterministicKeywordExtractor()
+
+        response = search_places_by_tags(
+            "주변 비슷한 베이커리집으로 찾아줘",
+            PLACES,
+            keyword_extractor=extractor,
+        )
+
+        self.assertEqual(extractor.last_query, "주변 비슷한 베이커리집으로 찾아줘")
+        self.assertEqual(response["search_places"][0]["place_id"], 83)
+        self.assertIn("베이커리", response["search_places"][0]["matched_tags"])
 
     def test_reranks_all_tagged_places_with_embedding_cosine_similarity(self):
         places = [
@@ -124,6 +177,9 @@ class NaturalSearchTest(unittest.TestCase):
     def test_endpoint_accepts_spring_page_content_and_snake_case(self):
         app.dependency_overrides[get_natural_search_embedding_provider] = (
             lambda: DeterministicEmbeddingProvider()
+        )
+        app.dependency_overrides[get_natural_search_keyword_extractor] = (
+            lambda: None
         )
         with TestClient(app) as client:
             response = client.post(
