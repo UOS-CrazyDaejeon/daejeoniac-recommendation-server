@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 
 from recommendation_api.main import app
 from recommendation_api.main import get_natural_search_embedding_provider
-from recommendation_api.natural_search import search_places_by_tags
+from recommendation_api.natural_search import _query_tokens, _search_query_tags, search_places_by_tags
 
 
 PLACES = [
@@ -69,6 +69,31 @@ class NaturalSearchTest(unittest.TestCase):
 
         self.assertEqual(response["search_places"][0]["place_id"], 83)
         self.assertIn("베이커리", response["search_places"][0]["matched_tags"])
+
+    def test_does_not_treat_similar_as_rainy_day_and_strips_particles(self):
+        places = [
+            {
+                **PLACES[0],
+                "id": 4,
+                "name": "전시관",
+                "tags": ["전시", "미술"],
+            },
+            PLACES[2],
+        ]
+
+        response = search_places_by_tags("주변 비슷한 베이커리집으로 찾아줘", places)
+
+        self.assertEqual(response["total_count"], 1)
+        self.assertEqual(response["search_places"][0]["place_id"], 83)
+        self.assertIn("베이커리", response["search_places"][0]["matched_tags"])
+        self.assertNotIn("전시", response["search_places"][0]["matched_tags"])
+        self.assertNotIn("미술전시", _search_query_tags(_query_tokens("비슷한")))
+
+    def test_keeps_explicit_single_syllable_intents(self):
+        query_tags = _search_query_tags(_query_tokens("비 오는 날 빵집으로"))
+
+        self.assertIn("미술전시", query_tags)
+        self.assertIn("베이커리", query_tags)
 
     def test_reranks_all_tagged_places_with_embedding_cosine_similarity(self):
         places = [

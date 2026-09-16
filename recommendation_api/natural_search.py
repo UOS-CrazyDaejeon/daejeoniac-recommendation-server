@@ -31,7 +31,55 @@ _STOP_WORDS = {
     "찾아줘",
     "해줘",
     "좀",
+    # 검색 대상 자체가 아닌 수식어다. 위치 정보나 기준 장소를 별도로 받지 않는
+    # 현재 API에서는 임베딩 프로필에 섞어도 검색 품질을 높이지 못한다.
+    "주변",
+    "근처",
+    "비슷한",
+    "비슷",
+    "유사한",
+    "찾아",
+    "찾기",
 }
+
+# 조사는 긴 표현부터 제거해야 "으로"를 "로"보다 먼저 처리할 수 있다. 형태소
+# 분석기를 쓰지 않는 가벼운 정규화이므로, 명사 자체를 훼손할 수 있는 "집" 같은
+# 접미사는 의도적으로 포함하지 않는다.
+_PARTICLE_SUFFIXES = (
+    "으로부터",
+    "에게서",
+    "에서부터",
+    "으로는",
+    "으로도",
+    "에게",
+    "한테",
+    "부터",
+    "까지",
+    "처럼",
+    "만큼",
+    "이라도",
+    "으로",
+    "에서",
+    "보다",
+    "마저",
+    "조차",
+    "밖에",
+    "이나",
+    "라도",
+    "은",
+    "는",
+    "이",
+    "가",
+    "을",
+    "를",
+    "과",
+    "와",
+    "에",
+    "의",
+    "도",
+    "만",
+    "로",
+)
 
 # 자연어 표현을 데이터베이스 tag 값으로 연결한다. 값은 반드시 실제 tag에 넣을 수
 # 있는 짧은 명사형으로 유지해, 매칭 근거를 응답에서 이해하기 쉽게 한다.
@@ -55,6 +103,7 @@ _INTENT_TAGS: dict[str, tuple[str, ...]] = {
     "전시": ("전시", "미술전시", "전시관람", "예술감상", "박물관"),
     "역사": ("역사탐방", "문화유산", "근대건축", "전통건축", "박물관"),
     "빵": ("베이커리", "빵지순례", "디저트", "대전명물"),
+    "빵집": ("베이커리", "빵지순례", "디저트", "대전명물"),
     "디저트": ("디저트", "베이커리", "카페", "빵지순례"),
     "카페": ("카페", "커피", "휴식", "대화"),
     "맛집": ("로컬맛집", "동네맛집", "한식", "식사"),
@@ -62,6 +111,8 @@ _INTENT_TAGS: dict[str, tuple[str, ...]] = {
     "시장": ("전통시장", "오일장", "지역먹거리", "장보기"),
     "운동": ("스포츠", "운동", "자전거", "러닝", "수상레저"),
     "비": ("실내체험", "실내관람", "박물관", "미술전시", "카페"),
+    "비오는": ("실내체험", "실내관람", "박물관", "미술전시", "카페"),
+    "비올": ("실내체험", "실내관람", "박물관", "미술전시", "카페"),
 }
 
 
@@ -74,15 +125,20 @@ def _query_tokens(query: str) -> list[str]:
     for raw_token in _TOKEN_PATTERN.findall(query.lower()):
         token = _normalize(raw_token)
         # "빵", "비"처럼 한 글자여도 의도 사전에 정의한 검색어는 보존한다.
-        if (len(token) < 2 and token not in _INTENT_TAGS) or token in _STOP_WORDS:
+        if not token or ((len(token) < 2 and token not in _INTENT_TAGS)):
             continue
-        tokens.append(token)
-        # 자주 쓰는 한국어 관형형/조사만 제거한다. 형태소 분석기가 없어도
-        # "따뜻한"과 "따뜻함" 같은 태그를 연결하기 위한 최소 보정이다.
-        for suffix in ("하는", "한", "은", "인", "을", "를", "에", "와", "과"):
+
+        normalized_tokens = [token]
+        # 형태소 분석기 없이도 "베이커리집으로"를 "베이커리집"으로, "아이와"를
+        # "아이"로 연결한다. 관형형은 기존 호환성을 위해 별도로 처리한다.
+        for suffix in (*_PARTICLE_SUFFIXES, "하는", "한", "인"):
             if token.endswith(suffix) and len(token) - len(suffix) >= 2:
-                tokens.append(token[: -len(suffix)])
+                normalized_tokens.append(token[: -len(suffix)])
                 break
+
+        for normalized_token in normalized_tokens:
+            if normalized_token not in _STOP_WORDS:
+                tokens.append(normalized_token)
     return list(dict.fromkeys(tokens))
 
 
@@ -90,7 +146,11 @@ def _intent_tags(query_tokens: Sequence[str]) -> list[str]:
     expanded: list[str] = []
     for token in query_tokens:
         for intent, tags in _INTENT_TAGS.items():
-            if intent in token or token in intent:
+            # 한 글자 의도어를 부분 문자열로 허용하면 "비슷한"의 "비"처럼 전혀
+            # 관계없는 단어까지 확장된다. 한 글자는 정확히 일치할 때만, 두 글자
+            # 이상은 한국어 결합어(예: "데이트코스", "비오는날")를 위해 접두어로만
+            # 매칭한다. 임의의 중간 글자 일치는 의도 확장의 근거로 사용하지 않는다.
+            if token == intent or (len(intent) >= 2 and token.startswith(intent)):
                 expanded.extend(tags)
     return list(dict.fromkeys(expanded))
 
