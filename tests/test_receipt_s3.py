@@ -30,6 +30,7 @@ from recommendation_api.receipt_s3 import (
     load_s3_receipt_object,
     list_s3_receipt_objects,
 )
+from recommendation_api.receipt_ocr import ReceiptDocumentError
 
 
 class ClosingBody:
@@ -502,6 +503,75 @@ class S3ReceiptApiTest(unittest.TestCase):
                 "ocrPlaceName": "카페 파도",
                 "ocrPlaceAddress": "대전광역시 유성구 대학로 291",
                 "ocrPaidAt": "2026-08-01T14:32:00",
+            },
+        )
+
+    def test_analyzes_spring_ocr_request_with_gpt_mini(self):
+        def loader(object_key: str):
+            self.assertEqual(object_key, "receipts/receipt-001.jpg")
+            return S3ReceiptObject(object_key, "image/jpeg", b"image-bytes")
+
+        def processor(image_bytes: bytes, content_type: str):
+            self.assertEqual(image_bytes, b"image-bytes")
+            self.assertEqual(content_type, "image/jpeg")
+            return {
+                "result": receipt_result(),
+                "model": "gpt-5-mini",
+                "processingTimeMs": 900,
+                "usage": None,
+            }
+
+        app.dependency_overrides[get_s3_receipt_loader] = lambda: loader
+        app.dependency_overrides[get_gpt_receipt_processor] = lambda: processor
+
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/v1/ocr-gpt",
+                json={
+                    "receiptUuid": "receipt-uuid-001",
+                    "objectKey": "receipts/receipt-001.jpg",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {
+                "receiptUuid": "receipt-uuid-001",
+                "ocrStatus": "SUCCESS",
+                "ocrPlaceName": "카페 파도",
+                "ocrPlaceAddress": "대전광역시 유성구 대학로 291",
+                "ocrPaidAt": "2026-08-01T14:32:00",
+            },
+        )
+
+    def test_returns_gpt_error_when_spring_gpt_ocr_cannot_read_receipt(self):
+        def loader(object_key: str):
+            return S3ReceiptObject(object_key, "image/jpeg", b"image-bytes")
+
+        def processor(image_bytes: bytes, content_type: str):
+            del image_bytes, content_type
+            raise ReceiptDocumentError("GPT가 영수증 총액을 확인하지 못했습니다.")
+
+        app.dependency_overrides[get_s3_receipt_loader] = lambda: loader
+        app.dependency_overrides[get_gpt_receipt_processor] = lambda: processor
+
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/v1/ocr-gpt",
+                json={
+                    "receiptUuid": "receipt-uuid-001",
+                    "objectKey": "receipts/receipt-001.jpg",
+                },
+            )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(
+            response.json()["error"],
+            {
+                "code": "RECEIPT_GPT_ANALYSIS_FAILED",
+                "message": "gpt-error",
+                "request_id": "receipt-uuid-001",
             },
         )
 

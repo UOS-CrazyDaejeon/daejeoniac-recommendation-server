@@ -144,6 +144,11 @@ S3_IMAGE_ERROR_RESPONSES = {
     502: {"description": "S3 읽기 또는 저장 실패"},
     503: {"description": "S3 또는 얼굴 검출 설정 누락"},
 }
+S3_GPT_RECEIPT_ERROR_RESPONSES = {
+    **S3_IMAGE_ERROR_RESPONSES,
+    502: {"description": "S3 읽기 또는 OpenAI API 호출·응답 오류"},
+    503: {"description": "S3 또는 OpenAI API 설정 누락"},
+}
 LOCAL_FACE_ERROR_RESPONSES = {
     413: {"description": "이미지 용량 제한 초과"},
     415: {"description": "지원하지 않는 파일 형식"},
@@ -708,6 +713,102 @@ def analyze_receipt_from_spring_ocr_request(
             500,
             "INTERNAL_SERVER_ERROR",
             "S3 영수증 처리 중 오류가 발생했습니다",
+            request.receiptUuid,
+        )
+
+
+@app.post(
+    "/api/v1/ocr-gpt",
+    response_model=ReceiptSpringOcrResponse,
+    tags=["영수증 분석"],
+    summary="S3 영수증 GPT-5 Mini 분석(Spring 연동용)",
+    description=(
+        "Spring이 /api/v1/ocr과 같은 receiptUuid와 objectKey를 JSON으로 전달하면, "
+        "서버가 S3에서 이미지를 읽어 GPT-5 Mini Vision으로 판독한 뒤 같은 응답 형식으로 반환합니다."
+    ),
+    response_description="Spring이 receiptId에 저장할 GPT OCR 핵심 추출 결과",
+    responses=S3_GPT_RECEIPT_ERROR_RESPONSES,
+)
+def analyze_receipt_from_spring_gpt_ocr_request(
+    request: ReceiptOcrRequest,
+    loader: S3ImageLoader = Depends(get_s3_receipt_loader),
+    processor: GptReceiptProcessor = Depends(get_gpt_receipt_processor),
+) -> dict[str, Any] | JSONResponse:
+    try:
+        source = loader(request.objectKey)
+        analysis = processor(source.image_bytes, source.content_type)
+        result = analysis["result"]
+        response_payload = build_ocr_result_callback_payload(request.receiptUuid, result)
+        logger.info(
+            "GPT OCR analysis completed receipt_uuid=%s model=%s result=%s",
+            request.receiptUuid,
+            analysis.get("model"),
+            result,
+        )
+        logger.info(
+            "Returning Spring GPT OCR response receipt_uuid=%s payload=%s",
+            request.receiptUuid,
+            response_payload,
+        )
+        return response_payload
+    except S3ReceiptError as exc:
+        logger.warning(
+            "S3 GPT OCR failure receipt_uuid=%s code=%s: %s",
+            request.receiptUuid,
+            exc.error_code,
+            exc,
+        )
+        return _error_response(
+            exc.status_code,
+            exc.error_code,
+            str(exc),
+            request.receiptUuid,
+        )
+    except ReceiptVisionConfigurationError as exc:
+        logger.warning(
+            "GPT OCR configuration failure receipt_uuid=%s: %s",
+            request.receiptUuid,
+            exc,
+        )
+        return _error_response(
+            503,
+            "RECEIPT_VISION_NOT_CONFIGURED",
+            str(exc),
+            request.receiptUuid,
+        )
+    except ReceiptDocumentError as exc:
+        logger.warning(
+            "GPT OCR analysis failure receipt_uuid=%s: %s",
+            request.receiptUuid,
+            exc,
+        )
+        return _error_response(
+            422,
+            "RECEIPT_GPT_ANALYSIS_FAILED",
+            "gpt-error",
+            request.receiptUuid,
+        )
+    except ReceiptVisionUpstreamError as exc:
+        logger.warning(
+            "GPT OCR upstream failure receipt_uuid=%s: %s",
+            request.receiptUuid,
+            exc,
+        )
+        return _error_response(
+            502,
+            "RECEIPT_VISION_UPSTREAM_ERROR",
+            str(exc),
+            request.receiptUuid,
+        )
+    except Exception:
+        logger.exception(
+            "Unexpected Spring GPT OCR failure receipt_uuid=%s",
+            request.receiptUuid,
+        )
+        return _error_response(
+            500,
+            "INTERNAL_SERVER_ERROR",
+            "S3 GPT 영수증 처리 중 오류가 발생했습니다",
             request.receiptUuid,
         )
 
