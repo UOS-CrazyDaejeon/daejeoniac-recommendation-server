@@ -351,13 +351,23 @@ def search_places_by_tags(
     대체한다. 이 경우에도 응답 형식은 동일하다.
     """
     query_tokens = _query_tokens(query)
+    keyword_source = "rule_based"
     if keyword_extractor is not None:
         try:
             query_tokens = keyword_extractor.extract_keywords(query)
+            keyword_source = "gpt-5-nano"
         except Exception as exc:
             # LLM 추출 실패가 검색 전체 실패나 빈 검색 결과로 이어지지 않게 한다.
             LOGGER.warning("Natural-search keyword extraction failed; using fallback: %s", exc)
     query_tags = _search_query_tags(query_tokens)
+    LOGGER.info(
+        "Natural-search query parsed query=%s keyword_source=%s keywords=%s query_tags=%s candidate_count=%s",
+        query,
+        keyword_source,
+        query_tokens,
+        query_tags,
+        len(places),
+    )
     candidate_rows: list[dict[str, Any]] = []
 
     for place in places:

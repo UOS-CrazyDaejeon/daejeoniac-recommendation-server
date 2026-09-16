@@ -190,6 +190,18 @@ def _log_recommendation_result(endpoint: str, response: dict[str, Any]) -> None:
     )
 
 
+def _log_natural_search_request(request: NaturalLanguageSearchRequest) -> None:
+    """Natural-search로 전달·정규화된 전체 요청을 운영 로그에 남긴다."""
+    payload = request.model_dump(mode="json")
+    logger.info(
+        "Natural-search request query=%s top_k=%s candidate_count=%s payload=%s",
+        request.query,
+        request.topK,
+        len(request.places),
+        json.dumps(payload, ensure_ascii=False, default=str),
+    )
+
+
 def _face_s3_error_code(error_code: str) -> str:
     return {
         "S3_RECEIPT_NOT_CONFIGURED": "S3_IMAGE_NOT_CONFIGURED",
@@ -390,6 +402,7 @@ def search_places_with_natural_language(
     ),
 ) -> dict[str, Any] | JSONResponse:
     try:
+        _log_natural_search_request(request)
         response = search_places_by_tags(
             request.query,
             [place.model_dump(mode="json") for place in request.places],
