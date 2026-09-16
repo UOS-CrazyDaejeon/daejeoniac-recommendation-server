@@ -18,7 +18,8 @@ from recommend_llm import (
 )
 
 
-LOGGER = logging.getLogger(__name__)
+# Uvicorn 실행 환경에서 자연어 검색 처리 로그가 access log와 함께 보이게 한다.
+LOGGER = logging.getLogger("uvicorn.error")
 
 
 _TOKEN_PATTERN = re.compile(r"[0-9A-Za-z가-힣]+")

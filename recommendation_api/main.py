@@ -80,7 +80,9 @@ S3ImageLoader = Callable[[str], S3ReceiptObject]
 S3ReceiptObjectLister = Callable[[int], S3ReceiptObjectList]
 FaceMosaicProcessor = Callable[[bytes, str], FaceMosaicResult]
 S3MosaicUploader = Callable[[FaceMosaicResult], str]
-logger = logging.getLogger(__name__)
+# Uvicorn은 기본적으로 access/error logger만 INFO 핸들러에 연결한다. API 처리
+# 로그도 컨테이너 stdout에 남기기 위해 같은 error logger를 사용한다.
+logger = logging.getLogger("uvicorn.error")
 
 MAX_RECEIPT_IMAGE_BYTES = int(
     os.environ.get("MAX_RECEIPT_IMAGE_BYTES", 10 * 1024 * 1024)
