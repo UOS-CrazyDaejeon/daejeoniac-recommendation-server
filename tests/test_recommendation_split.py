@@ -238,7 +238,7 @@ class SplitRecommendationProcessorTest(unittest.TestCase):
         )
 
         self.assertEqual(response["current_place_id"], 100)
-        self.assertEqual(response["visited_place_ids"], [99])
+        self.assertEqual(response["visited_place_ids"], [99, 100])
         self.assertEqual(len(response["next_places"]), 5)
         self.assertIsInstance(response["next_places"][0]["place_id"], int)
         self.assertNotIn("similar_places", response)
@@ -499,7 +499,7 @@ class SplitRecommendationApiTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(captured["current_place"]["id"], 1)
         self.assertEqual(captured["candidates"][0]["id"], 2)
-        self.assertEqual(captured["visited_place_ids"], [10])
+        self.assertEqual(captured["visited_place_ids"], [10, 1])
         self.assertEqual(captured["recent_places"][0]["id"], 10)
         self.assertTrue(captured["context"]["current_time"])
 
@@ -561,7 +561,7 @@ class SplitRecommendationApiTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(captured["current_place"]["id"], 2)
-        self.assertEqual(captured["visited_place_ids"], [10])
+        self.assertEqual(captured["visited_place_ids"], [10, 2])
         self.assertEqual(
             captured["recent_places"][0]["visitedAt"], "2026-08-28T14:30:00"
         )

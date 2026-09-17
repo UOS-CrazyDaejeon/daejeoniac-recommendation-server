@@ -2236,10 +2236,20 @@ def process_spring_next_places_request(
     current_place = request["current_place"]
     current_lat = _coordinate(current_place, "latitude", "lat")
     current_lng = _coordinate(current_place, "longitude", "lng")
+    # 현재 장소도 이미 방문한 장소다. 호출부가 방문 목록에 넣지 않더라도
+    # 다음 장소 후보에서 제외하고, 응답에도 유효 방문 목록으로 반환한다.
+    effective_visited_place_ids = list(
+        dict.fromkeys(
+            [
+                *(str(place_id) for place_id in request["visited_place_ids"]),
+                str(current_place["id"]),
+            ]
+        )
+    )
     eligible_candidates = _eligible_candidates_within_radius(
         current_place=current_place,
         candidates=request["candidates"],
-        visited_place_ids=request["visited_place_ids"],
+        visited_place_ids=effective_visited_place_ids,
         radius_m=float(request["context"]["radius_m"]),
     )
 
@@ -2303,7 +2313,9 @@ def process_spring_next_places_request(
     return {
         "generated_at": datetime.now().astimezone().isoformat(),
         "current_place_id": int(current_place["id"]),
-        "visited_place_ids": [int(place_id) for place_id in request["visited_place_ids"]],
+        "visited_place_ids": [
+            int(place_id) for place_id in effective_visited_place_ids
+        ],
         "next_places": next_places,
         "recommendation_log": recommendation_log,
     }

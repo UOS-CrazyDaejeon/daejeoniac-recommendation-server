@@ -471,7 +471,11 @@ class NextPlacesRequest(BaseModel):
         visited_rows.sort(key=lambda place: str(place.get("visitedAt") or ""))
         visited_ids = list(
             dict.fromkeys(
-                [*self.visitedPlaceIds, *(place["id"] for place in visited_rows)]
+                [
+                    *self.visitedPlaceIds,
+                    *(place["id"] for place in visited_rows),
+                    self.selectedPlace.id,
+                ]
             )
         )
         return {

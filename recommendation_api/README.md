@@ -16,9 +16,50 @@ Spring이 MySQL에서 조회한 장소 후보와 최근 선택 이력을 받아 
 | --- | --- | --- |
 | 선택 장소와 비슷한 장소 | `POST /api/v1/recommendations/similar-places` | `similar_places` 5개 |
 | 최근 이동 흐름에 맞는 다음 장소 | `POST /api/v1/recommendations/next-places` | `next_places` 5개와 추천 로그 |
+| 자연어로 장소 검색 | `POST /api/v1/recommendations/natural-search` | 태그 임베딩 유사도 장소 최대 5개 |
 | 기존 통합 API | `POST /api/v1/recommendations` | 위 두 결과를 모두 계산하며 deprecated |
 
 분리 API를 사용하면 필요하지 않은 추천 모델을 함께 실행하지 않는다.
+
+### 태그 기반 자연어 장소 검색
+
+```http
+POST /api/v1/recommendations/natural-search
+Content-Type: application/json
+```
+
+Python 서버는 MySQL을 직접 조회하지 않으므로 Spring이 검색 대상 장소를 `places`에
+전달한다. 배열과 Spring Page 객체(`places.content`) 모두 가능하다. 검색 문장은
+`따뜻한 카페`, `아이와 갈 곳`, `야경 데이트`, `빵 먹기 좋은 곳`처럼 태그 동의어로 먼저
+확장한 뒤, 확장된 검색 태그와 각 장소의 `tag`를 `text-embedding-3-small`으로 임베딩해
+코사인 유사도 순으로 정렬한다. 결과는 최대 5개다.
+
+`OPENAI_API_KEY`와 `USE_TEXT_EMBEDDINGS=1`이 설정되어야 임베딩 정렬이 활성화된다.
+키가 없거나 OpenAI 호출에 실패한 경우에는 검색을 실패시키지 않고, 기존의 직접 태그
+매칭 점수로 자동 대체한다.
+
+```json
+{
+  "query": "아이와 야경을 보기 좋은 곳",
+  "places": [
+    {
+      "placeId": 2,
+      "placeName": "대전오월드",
+      "tag": "동물원,놀이공원,사파리,가족나들이,야외체험"
+    },
+    {
+      "placeId": 5,
+      "placeName": "으능정이스카이로드",
+      "tag": "원도심,미디어아트,야경,포토스팟,데이트"
+    }
+  ],
+  "topK": 5
+}
+```
+
+응답의 `matched_tags`는 해당 장소가 검색된 이유다. `embedding_similarity_score`와 `similarity_score`는 임베딩
+코사인 유사도이며, `semantic_similarity_source`가 `text_embedding`이면 임베딩 결과,
+`tag_match_fallback`이면 직접 태그 매칭 대체 결과다.
 
 ### 선택한 장소와 비슷한 장소 추천
 
@@ -67,7 +108,8 @@ Content-Type: application/json
 
 `selectedPlace`를 현재 장소로, `nearbyPlaces`를 추천 후보로,
 `visitedPlaces`를 최근 이동 이력과 방문 제외 목록으로 사용해 다음 이동 장소를
-계산한다. `visitedAt`이 있는 방문 장소는 시각순으로 정렬한 뒤 최근 4개를 이동
+계산한다. `selectedPlace`도 이미 방문한 현재 장소로 자동 포함되어 후보에서 제외된다.
+`visitedAt`이 있는 방문 장소는 시각순으로 정렬한 뒤 최근 4개를 이동
 흐름 계산에 사용한다. 응답에는 `generated_at`, `current_place_id`,
 `visited_place_ids`, `next_places`만 포함된다.
 
@@ -419,8 +461,8 @@ FACE_OPENCV_THREADS=1
 FACE_MAX_CONCURRENT_JOBS=1
 ```
 
-얼굴을 하나도 검출하지 못하면 비식별화되지 않은 원본을 공개하지
-않도록 `422 FACE_NOT_DETECTED`를 반환하고 S3에 결과를 저장하지 않는다.
+얼굴을 하나도 검출하지 못해도 정상 처리하며, `faceCount: 0`과 함께
+재인코딩한 JPEG 결과를 반환하고 S3 API는 해당 결과를 저장한다.
 얼굴 검출은 100% 보장되지 않으므로 공개 전 검수 또는 사용자 확인 절차를
 추가하는 것이 좋다.
 
@@ -551,7 +593,7 @@ RECOMMENDATION_API_BASE_URL=http://10.0.2.15
 ```
 
 `WebClient`는 GPT 응답 시간을 고려해 연결 제한 3초, 전체 응답 제한
-90초를 사용한다.
+180초를 사용한다.
 
 ```java
 @Bean
@@ -560,7 +602,7 @@ WebClient recommendationWebClient(
         @Value("${recommendation.base-url}") String baseUrl) {
     HttpClient httpClient = HttpClient.create()
             .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 3000)
-            .responseTimeout(Duration.ofSeconds(90));
+            .responseTimeout(Duration.ofSeconds(180));
 
     return builder
             .baseUrl(baseUrl)
