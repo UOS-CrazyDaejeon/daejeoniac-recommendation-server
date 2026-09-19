@@ -422,6 +422,18 @@ def search_places_with_natural_language(
 ) -> dict[str, Any] | JSONResponse:
     try:
         _log_natural_search_request(request)
+        if not request.places:
+            response = {
+                "query": request.query,
+                "total_count": 0,
+                "search_places": [],
+            }
+            _log_recommendation_result(
+                "/api/v1/recommendations/natural-search",
+                response,
+            )
+            return response
+
         response = search_places_by_tags(
             request.query,
             [place.model_dump(mode="json") for place in request.places],

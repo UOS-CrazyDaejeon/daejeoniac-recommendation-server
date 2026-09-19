@@ -293,7 +293,6 @@ class TagSearchPlace(Place):
 TagSearchCandidates = Annotated[
     list[TagSearchPlace],
     BeforeValidator(_unwrap_spring_page_content),
-    Field(min_length=1),
 ]
 
 

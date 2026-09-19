@@ -37,6 +37,8 @@ Python 서버는 MySQL을 직접 조회하지 않으므로 Spring이 검색 대�
 `OPENAI_API_KEY`와 `USE_TEXT_EMBEDDINGS=1`이 설정되어야 임베딩 정렬이 활성화된다.
 키가 없거나 OpenAI 호출에 실패한 경우에는 검색을 실패시키지 않고, 기존의 직접 태그
 매칭 점수로 자동 대체한다.
+검색 대상이 없으면 `places: []`를 보낼 수 있으며, 이 경우 임베딩·키워드 추출을
+실행하지 않고 `200 OK`와 `total_count: 0`, 빈 `search_places` 배열을 반환한다.
 
 ```json
 {
