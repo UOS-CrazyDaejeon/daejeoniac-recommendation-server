@@ -143,6 +143,12 @@ Candidates = Annotated[
     BeforeValidator(_unwrap_spring_page_content),
     Field(min_length=1),
 ]
+# 분리된 추천 API에서 후보가 없다는 것은 추천 결과가 없다는 정상 상황일 수 있다.
+# 기존 통합 추천 API는 후보를 반드시 요구하므로 별도 타입으로 유지한다.
+SplitRecommendationCandidates = Annotated[
+    list[Place],
+    BeforeValidator(_unwrap_spring_page_content),
+]
 
 
 class RecommendationRequest(BaseModel):
@@ -225,7 +231,7 @@ class SimilarPlacesRequest(BaseModel):
         validation_alias=AliasChoices("selected_place", "selectedPlace"),
         description="사용자가 선택한 기준 장소",
     )
-    nearbyPlaces: Candidates = Field(
+    nearbyPlaces: SplitRecommendationCandidates = Field(
         validation_alias=AliasChoices("nearby_places", "nearbyPlaces", "candidates"),
         description="Spring이 조회한 인근 장소 목록 또는 Page 객체",
     )
@@ -413,7 +419,7 @@ class NextPlacesRequest(BaseModel):
         ),
         description="사용자가 현재 선택한 장소",
     )
-    nearbyPlaces: Candidates = Field(
+    nearbyPlaces: SplitRecommendationCandidates = Field(
         validation_alias=AliasChoices("nearby_places", "nearbyPlaces", "candidates"),
         description="Spring이 조회한 인근 장소 목록 또는 Page 객체",
     )

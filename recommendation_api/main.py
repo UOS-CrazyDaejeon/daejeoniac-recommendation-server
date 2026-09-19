@@ -356,6 +356,18 @@ def create_similar_place_recommendations(
     processor: RecommendationProcessor = Depends(get_similar_places_processor),
 ) -> dict[str, Any] | JSONResponse:
     try:
+        if not request.nearbyPlaces:
+            response = {
+                "generated_at": datetime.now().astimezone().isoformat(),
+                "selected_place_id": request.selectedPlace.id,
+                "similar_places": [],
+            }
+            _log_recommendation_result(
+                "/api/v1/recommendations/similar-places",
+                response,
+            )
+            return response
+
         response = processor(request.to_processor_request())
         _log_recommendation_result(
             "/api/v1/recommendations/similar-places",
@@ -450,6 +462,20 @@ def create_next_place_recommendations(
     processor: RecommendationProcessor = Depends(get_next_places_processor),
 ) -> dict[str, Any] | JSONResponse:
     try:
+        if not request.nearbyPlaces:
+            normalized_request = request.to_processor_request()
+            response = {
+                "generated_at": datetime.now().astimezone().isoformat(),
+                "current_place_id": request.selectedPlace.id,
+                "visited_place_ids": normalized_request["visited_place_ids"],
+                "next_places": [],
+            }
+            _log_recommendation_result(
+                "/api/v1/recommendations/next-places",
+                response,
+            )
+            return response
+
         response = processor(request.to_processor_request())
         _log_recommendation_result(
             "/api/v1/recommendations/next-places",

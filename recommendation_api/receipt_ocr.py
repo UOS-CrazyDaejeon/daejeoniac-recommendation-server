@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import re
+import time
 from dataclasses import dataclass
 from io import BytesIO
 from typing import Any, Iterable
@@ -17,6 +19,10 @@ register_heif_opener(thumbnails=False)
 
 class ReceiptDocumentError(ValueError):
     """Raised when the uploaded image cannot produce a usable receipt result."""
+
+
+class ReceiptOcrTimeoutError(ReceiptDocumentError):
+    """Raised when all Tesseract attempts exceed the request's time budget."""
 
 
 PSM_MODES = (6, 4, 11, 3)
@@ -35,6 +41,7 @@ RECEIPT_DETECTION_MAX_EDGE = 1600
 RECEIPT_MIN_AREA_RATIO = 0.03
 RECEIPT_MIN_EDGE = 96
 RECEIPT_MIN_OCR_WIDTH = 1200
+DEFAULT_OCR_TIMEOUT_SECONDS = 30.0
 
 _AMOUNT_TOKEN_RE = re.compile(
     r"(?<!\d)[0-9Oo](?:[0-9Oo,\s]*[0-9Oo])?(?:\s*원)?"
@@ -237,7 +244,29 @@ def _load_image_variants(image_bytes: bytes) -> list[tuple[str, Any]]:
         raise ReceiptDocumentError("영수증 이미지 형식을 읽지 못했습니다.") from error
 
 
-def _run_tesseract(image: Any, *, language: str, psm: int) -> str:
+def _ocr_timeout_seconds() -> float:
+    raw_timeout = os.environ.get(
+        "OCR_TIMEOUT_SECONDS", str(DEFAULT_OCR_TIMEOUT_SECONDS)
+    ).strip()
+    try:
+        timeout = float(raw_timeout)
+    except ValueError as error:
+        raise ReceiptDocumentError("OCR_TIMEOUT_SECONDS는 숫자여야 합니다.") from error
+    if timeout <= 0:
+        raise ReceiptDocumentError("OCR_TIMEOUT_SECONDS는 0보다 커야 합니다.")
+    return timeout
+
+
+def _run_tesseract(
+    image: Any,
+    *,
+    language: str,
+    psm: int,
+    deadline: float,
+) -> str:
+    remaining_seconds = deadline - time.monotonic()
+    if remaining_seconds <= 0:
+        raise ReceiptOcrTimeoutError("OCR 처리 시간이 제한 시간을 초과했습니다.")
     try:
         import pytesseract
 
@@ -245,7 +274,12 @@ def _run_tesseract(image: Any, *, language: str, psm: int) -> str:
             image,
             lang=language,
             config=f"--psm {psm}",
+            timeout=remaining_seconds,
         ) or ""
+    except RuntimeError as error:
+        if "timeout" in str(error).lower():
+            raise ReceiptOcrTimeoutError("OCR 처리 시간이 제한 시간을 초과했습니다.") from error
+        raise ReceiptDocumentError("Tesseract OCR 실행에 실패했습니다.") from error
     except Exception as error:
         raise ReceiptDocumentError("Tesseract OCR 실행에 실패했습니다.") from error
 
@@ -281,10 +315,16 @@ def extract_receipt_text_from_image_bytes(
     """OCR a receipt with a fast path and fallback layouts when needed."""
     attempts: list[_OcrAttempt] = []
     variants = _load_image_variants(image_bytes)
+    deadline = time.monotonic() + _ocr_timeout_seconds()
 
     for variant_name, image in variants:
         for psm in FAST_PSM_MODES:
-            text = _run_tesseract(image, language=language, psm=psm)
+            text = _run_tesseract(
+                image,
+                language=language,
+                psm=psm,
+                deadline=deadline,
+            )
             attempts.append(
                 _OcrAttempt(
                     variant=variant_name,
@@ -303,7 +343,12 @@ def extract_receipt_text_from_image_bytes(
         for psm in PSM_MODES:
             if psm in FAST_PSM_MODES:
                 continue
-            text = _run_tesseract(image, language=language, psm=psm)
+            text = _run_tesseract(
+                image,
+                language=language,
+                psm=psm,
+                deadline=deadline,
+            )
             attempts.append(
                 _OcrAttempt(
                     variant=variant_name,
