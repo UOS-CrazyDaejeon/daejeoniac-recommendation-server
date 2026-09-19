@@ -95,6 +95,8 @@ OpenAI 텍스트 임베딩이 활성화되어 있으면 장소명·카테고리�
 `requestId`, `sessionId`, `visitedPlaceIds`, `radiusM`은 선택 필드다. `radiusM`의
 기본값은 1000m이며, `tag`가 쉼표로 구분된 문자열이면 추천용 태그 배열로 변환한다.
 반경 안의 미방문 후보가 5개 미만이면, 존재하는 후보만큼만 반환한다.
+후보가 전혀 없으면 `nearbyPlaces: []`를 받을 수 있으며, 이 경우에도 `200 OK`와
+빈 `similar_places` 배열을 즉시 반환한다.
 
 응답에는 `generated_at`, `selected_place_id`, `similar_places`만 포함되고
 `request_id`, `session_id`, `next_places`는 반환하지 않는다.
@@ -130,6 +132,8 @@ Content-Type: application/json
 `currentTime`, `weather`, `userPreferences`, `radiusM`, `requestId`, `sessionId`은
 선택 필드다. `currentTime`이 없으면 Python 서버의 현재 시각을 기준으로 추천한다.
 반경 안의 미방문 후보가 5개 미만이면, 존재하는 후보만큼만 반환한다.
+반경 안 후보가 전혀 없으면 `nearbyPlaces: []`를 받을 수 있으며, 이 경우에도
+`200 OK`와 빈 `next_places` 배열을 즉시 반환한다.
 
 ### 기존 통합 추천 요청(deprecated)
 
@@ -362,6 +366,8 @@ S3 설정은 `recommendation_api/.env`에 넣는다. 아래 점(`.`) 형식과 A
 ```dotenv
 SPRING_OCR_CALLBACK_URL=http://spring-server:8080/api/v1/receipts/ocr-result
 SPRING_OCR_CALLBACK_TIMEOUT_SECONDS=5
+# Tesseract OCR 전체 실행 시간 제한(기본 30초)
+OCR_TIMEOUT_SECONDS=30
 SPRING_OCR_SUCCESS_STATUS=COMPLETED
 # Spring 내부 인증이 필요한 경우에만 설정한다.
 SPRING_OCR_CALLBACK_AUTHORIZATION=
